@@ -1,29 +1,63 @@
 cmake_minimum_required(VERSION 3.16)
 project(test_shell
-    VERSION 1.0
-    DESCRIPTION "C++ 命令解析执行框架"
+    VERSION 2.0.0
+    DESCRIPTION "C++ 命令解析执行框架 — Signal/Slot + Task Shard + DLL Injection"
     LANGUAGES CXX
 )
 
-# 使用 C++17（你用了 std::any）
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 开启多线程支持（你用了 std::mutex / condition_variable）
+# Place DLLs and EXEs in the same output directory so the linker can find them at runtime
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+# MSVC: treat all source files as UTF-8 (Chinese comments in the code)
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 find_package(Threads REQUIRED)
 
-# 源文件
+# ============================================
+#  EventBus DLL (singleton lives here)
+# ============================================
+add_subdirectory(eventbus)
+add_subdirectory(monitor)
+
+# ============================================
+#  Sample DLL modules (for plugin loading demonstration)
+# ============================================
+add_subdirectory(modules/samples)
+
+# ============================================
+#  Main executable
+# ============================================
 add_executable(test_shell
     main.cpp
-    console_parser.cpp
-    friend_pm.cpp
-    print_module.cpp
-    task.cpp
-    tasks_pool.cpp
+    core/Task.cpp
+    parser/CommandParser.cpp
 )
 
-# 头文件目录（让 #include 能找到）
-target_include_directories(test_shell PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(test_shell PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/parser
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules
+    ${CMAKE_CURRENT_SOURCE_DIR}/modules/logging
+    ${CMAKE_CURRENT_SOURCE_DIR}/monitor
+)
+target_link_libraries(test_shell PRIVATE eventbus Threads::Threads psapi)
 
-# 链接线程库
-target_link_libraries(test_shell PRIVATE Threads::Threads)
+# ============================================
+#  Tests
+# ============================================
+option(BUILD_TESTING "Build unit tests" ON)
+
+if(BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(test)
+endif()

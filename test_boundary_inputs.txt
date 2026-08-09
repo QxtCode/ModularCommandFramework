@@ -1,0 +1,25 @@
+[empty]
+-m:NoSuchModule -f:1
+-m:PrintModule -f:NoSuchFunc
+-m:PrintModule -f:1
+-m:PrintModule -f:2 -v:Param|HelloWorld
+-m:PrintModule -f:3
+-m:PrintModule -f:help
+-m:Logger -f:help
+-m:Logger -f:info -v:msg|boundary_test_message
+-m:Logger -f:error -v:msg|something_wrong
+-m:Logger -f:setlevel -v:level|error
+-m:Logger -f:debug -v:msg|should_be_filtered
+-m:Logger -f:setlevel -v:level|debug
+-m:Logger -f:info -v:msg|restored_debug_level
+-m:Calculator -f:add -v:a|100,b|200
+-m:Calculator -f:mul -v:a|7,b|8
+-m:Calculator -f:help
+-m:Calculator -f:add
+-m:PrintModule -f:2 -v:Param|中文测试Unicode
+-m:Logger
+-m:
+-f:1
+-v:key|val
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+/exit
