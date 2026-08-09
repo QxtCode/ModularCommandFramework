@@ -1,68 +1,100 @@
-﻿#include <iostream>
-#include"Print_Module.h"
-#include"Friend_PM.h"
-#include"Command_Module.h"
-#include"Parmer_Packe.h"
-#include"Module_Life_Manager.h"
-#include"Command_Parser_Base.h"
-#include"Task.h"
-#include"Console_parser.h"
+/// =================================================================
+///  test_shell v2.5 — 多线程命令框架
+/// =================================================================
+///
+///  一条命令的完整旅程：
+///
+///    输入 "-m:Calc -f:add -v:a|1,b|2"
+///      │
+///      ├─ ① CommandParser 解析成 ParmarPack
+///      ├─ ② TasksPool 拿一个空闲 Task
+///      ├─ ③ ThreadPool.Enqueue → 工人线程干活
+///      │      │
+///      │      └─ while (task->Step(bus)) {}  ← 推完所有分片
+///      │             │
+///      │             └─ bus.Emit("Calc.add", pack)
+///      │                    → EventBus → Module::Execute → lambda
+///      │
+///      ├─ ④ 工人干完 → PushResult → 归还 Task（槽位立即可复用）
+///      ├─ ⑤ 主循环 DrainResultStore → Formatter → LOG_PLAIN
+///      └─ ⑥ 主循环 cv.wait_for(ResultStore || input_queue)，零空转
+///
+///  main() 只负责组装。循环逻辑在 ShellEngine 里。
+/// =================================================================
 
-/*
-===========任务清单==========
-- 一个命令式的插件架构
-  1.核心三个功能点 
-	·可以实现插件化热更新，模块自由替换
-	·使用命令模式驱动，解耦层层转达指令
-	·解析层shell，能解析以json、xml以及市场上的主流文本形式
-  2.如何实现
-	·解析层<shell>：以文件或网络拿到命令文本，或者以客户端前端按钮的指令获取文本形式，
-		并解释其文本的格式以及命令参数
+#define _CRTDBG_MAP_ALLOC
+#include <iostream>
+#ifdef _WIN32
+#include <windows.h>
+#include <crtdbg.h>
+#endif
 
-	·总命令层<Command_Manager>：**Command_Manager** 关联分命令层 **Command_Moduel**，
-	    管理分发调度，写入模块名字主动锁定模块入口
-
-	·分命令层<Command_Moduel>：是一层抽象层，分别持有所有模块的指针包含所有模块的基类
-	    传递参数包调用模块基类的接口执行模块
-
-	·模块层<Moduel>：模块层是功能实现的底层入口管理函数的挂载，被分命令层调动，
-		模块内部自动查函数表主动执行函数基础 **ModuelBaseObject**模块基类
-	
-	·模块函数注册层<Moduel_fried>：函数注册不是在模块内执行的，是在外部注入实现，
-		这层是模块的友好类型专门管理模块函数的注册
-
-	·生命周期层<ModuleLife_Manager>：管理两大基类层，模块基类和分命令层基类，是这些类挂载的核心的周期维护者
-
-*/
-
+#include "core/Config.h"
+#include "core/ModuleLifeManager.h"
+#include "core/ShellEngine.h"
+#include "modules/PrintModule.h"
+#include "modules/logging/LogModule.h"
+#include "event_bus/event_bus.h"
+#include "sdk/IModule.h"
 
 using namespace std;
-int main()
+
+int main(int argc, char* argv[])
 {
-	//==================测试==========================
+#ifdef _WIN32
+    _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
 
-	//1.初始化生命周期管理器
-	   auto& LifeManager = ModuleLifeManager::GetInstance();
-	   auto& consoleshell = ConsoleParser::getParser();
-	   
-	   //2. 创建打印模块，并用 PrintFriend 注册函数
-		auto printModule = std::make_unique<PrintModule>();
-		PrintFriend pf(printModule.get());   // 构造函数自动 Bind 并注册函数
+    // ================================================================
+    //  Config — file + CLI / 配置加载
+    // ================================================================
+    ShellConfig cfg;
+    cfg.LoadFromFile("test_shell.cfg");   // 可选，不存在则用默认值
+    cfg.ApplyArgs(argc, argv);            // 命令行覆盖
+    cfg.Print();
 
-		//3.创建命令管理模块，可以是框架内部完成创建
-		auto cmdModule = std::make_unique<CommandModule>(printModule.get());
+    cout << "===== test_shell v2.5 =====" << endl << endl;
 
-	   //4.注册模块
-		LifeManager.AddModule(std::move(printModule));
-		LifeManager.AddCommand("c_printmodule", std::move(cmdModule));
+    // ================================================================
+    //  Modules — register before engine starts
+    // ================================================================
+    auto& mgr = ModuleLifeManager::GetInstance();
+    auto& bus = EventBus::GetInstance();
 
-		auto a = consoleshell.sendCommand("TXT", string("-m:c_printmodule -f:2 -v:Param|cmd"));
-		auto pack = consoleshell.PopPack();
-		std::cout << pack->mod_id << " : " << pack->func_id <<" : " << *(pack->pramer_list.find(ParamKeyToStr(ParamKey::PARAM))->second.begin()) << endl;
+    mgr.AddModule(make_unique<PrintModule>());
+    mgr.AddModule(make_unique<LogModule>());
+    mgr.AddModule(make_unique<MetricsCollector>());
 
-			//6.执行任务
-		Task task(std::move(pack), LifeManager);
-		task.run();
-		
-		return 0;
+    // 应用配置中的日志级别（覆盖 log.conf 设置）
+    LogFac::Instance().GetLogger().SetLevel(StringToLogLevel(cfg.log_level));
+
+    LOG_INFO("test_shell v2.5 started");
+
+    bus.RegisterSignal<uint32_t, bool, int, const char*, const char*>("task.result");
+
+#ifdef _WIN32
+    mgr.ScanPluginDirectory(cfg.plugin_dir);
+#endif
+
+    // ================================================================
+    //  Engine — event-driven main loop, configured from cfg
+    // ================================================================
+    ShellEngine engine(cfg.pool_size, cfg.workers);
+
+    cout << endl
+         << "  -m:ModuleName -f:FuncID -v:key|val,..." << endl
+         << "  -m:ModuleName -f:help  -> list functions" << endl
+         << "  <enter>  -> list modules" << endl
+         << "  /exit    -> quit" << endl << endl;
+
+    engine.Run();
+    engine.Shutdown();
+
+    // ================================================================
+    //  Done
+    // ================================================================
+    LOG_PLAIN("Goodbye.");
+    return 0;
 }
