@@ -1,48 +1,55 @@
 /// =================================================================
-///  Concurrency Stress Tests — 专门攻击并发漏洞
+///  Concurrency Stress Tests — 并发缺陷追踪
 /// =================================================================
 ///
-///  代码审查发现的真实 bug（按严重程度排列）:
+///  审计日期: 2026-08-10
+///  审计范围: ModuleLifeManager / EventBus / Task / TasksPool / ThreadPool
 ///
-///  Bug 1 [MEDIUM]: AddModule 的 TOCTOU 竞态
-///    两个线程同时 AddModule 同名模块 → 都通过重名检查 →
-///    第二个覆盖第一个 → 被覆盖模块的 unique_ptr 析构 →
-///    模块被 delete，但它的 EventBus 信号还在 →
-///    Emit 时访问已删除模块 → use-after-free
+///  【已修复的 Bug】
 ///
-///  Bug 2 [MEDIUM]: Task::shards_ 没有同步
-///    PushShard() 和 Step()/Reset() 同时访问 std::vector →
-///    data race (C++ 标准明确这是 UB)
+///  Bug 1 [已修复 - v2.4]: AddModule TOCTOU → 僵尸信号 → use-after-free
+///    修复: AddModule 全程持 unique_lock，ConnectToEventBus 在锁内执行。
+///    两个线程同时 AddModule 同名模块时，只有一个成功。失败的线程
+///    OnInit() 虽然被浪费执行了，但不会在 EventBus 上留下僵尸信号。
+///    残留小问题: OnInit() 在锁外调用，重复调用有副作用浪费。
 ///
-///  Bug 3 [MEDIUM]: Emit 持锁期间执行用户代码
-///    Emit() 持有 bus_mutex_ shared_lock 执行全部 Slot →
-///    如果 Slot 执行 500ms，UnloadModule 的 RemoveSignal
-///    就被阻塞 500ms（因为需要 unique_lock）→
-///    而 UnloadModule 又持有 module_map_ 的 unique_lock →
-///    这 500ms 内所有模块操作被阻塞（Dispatch/GetModule 等）
-///    → 不是死锁，但是严重的可用性问题
+///  Bug 2 [已修复 - v2.4]: Task::shards_ data race
+///    修复: 添加 shards_mutex_，PushShard/Step/Reset/GetProgress 全部加锁。
 ///
-///  Bug 4 [LOW]: Slot lambda 捕获裸 [this]
-///    ConnectToEventBus 的 lambda: [this](p) { Execute(p); }
-///    模块删除后，EventBus 信号上的 lambda 的 this 悬空。
-///    目前"碰巧"安全：因为 UnloadModule 先 RemoveSignal
-///    （阻塞等待所有 Emit 完成）再 delete 模块。
-///    但这个安全依赖 Emit 的实现细节（持锁执行 Slot）—
-///    如果未来改成异步 Emit，就炸了。
+///  Bug 4 [已修复 - v2.4]: Slot lambda 捕获裸 [this] → use-after-free
+///    修复: Slot 持有 weak_ptr<ModuleBaseObject>，Run() 时 Lock() 检查存活。
+///    异常安全: Slot::Run() 用 try-catch(...) 兜底（v2.5）。
 ///
-///  Bug 5 [LOW]: TasksPool::Tick() 持 mutex_ 调 Step()
-///    Tick 期间整个池被锁，其他线程无法 Acquire/Release。
-///    （目前 main.cpp 不用 Tick，但代码在那里就有隐患）
+///  【已知待处理问题】
 ///
-///  关于 DLL 卸载:
-///    经过仔细分析，UnloadModule → RemoveSignal 的路径是
-///    race-free 的。因为 Emit 持有 bus_mutex_ shared_lock
-///    执行 Slot，RemoveSignal 需要 unique_lock，所以
-///    RemoveSignal 会等所有正在执行的 Slot 结束后才删除信号。
-///    信号删除后模块才被 delete/FreeLibrary，所以是安全的。
+///  问题 A [MEDIUM — 连锁阻塞]: Emit 持 shared_lock 执行全部 Slot
+///    Emit() 持有 bus_mutex_ shared_lock → TraverseSlots → 逐个执行 Slot。
+///    RemoveSignal 需要 unique_lock → 被阻塞，直到所有 Emit 完成。
+///    UnloadModule 调 RemoveSignal → 被阻塞。
+///    UnloadModule 持有 module_map_ unique_lock → Dispatch/GetModule 也被阻塞。
+///    结果: 一个慢 Slot 连锁阻塞整个框架。
+///    这是故意的设计权衡（安全 > 性能），但可用性影响大。
+///    方案待定:
+///      A1. Emit 先拍快照再释放锁（Slot 执行不持锁）
+///      A2. 引入超时机制（Slot 超时自动跳过）
+///      A3. 分离"信号注册锁"和"Slot 执行"，异步 Emit
 ///
-///    但这个安全建立在"Emit 持锁执行整个 Slot"的基础上 —
-///    如果 Slot 执行时间长，会严重阻塞其他操作。
+///  问题 B [LOW — 无死任务检测]: 卡住的 Slot 永久占用 Worker + Pool 槽位
+///    模块回调进入死循环 → Worker 线程永久卡住。
+///    Cancel/Pause 只在分片间生效，无法中断当前分片。
+///    后果: Worker 数递减，Pool 槽位泄露，吞吐量下降。
+///
+///  问题 C [LOW — Tick() 持锁]: TasksPool::Tick() 持 mutex_ 调 Step()
+///    Tick 期间 Acquire/Release 被阻塞。main.cpp 不用 Tick，暂时无实际影响。
+///
+///  【并发安全保证（已验证）】
+///
+///  1. DLL 卸载安全: Emit 持 shared_lock → RemoveSignal 等 Emit 完成才删信号
+///     → 信号删除后模块 delete → 不会 use-after-free。
+///  2. Slot 弱引用保护: weak_ptr<ModuleBaseObject> + Run() 时 Lock()。
+///  3. EventBus DLL 单例: static instance 在 DLL 内，所有模块共享唯一实例。
+///  4. std::shared_mutex 读写分离: 多个 Emit 可并发（shared_lock），
+///     RemoveSignal/RegisterSignal 串行化（unique_lock）。
 
 #include <gtest/gtest.h>
 #include <atomic>
