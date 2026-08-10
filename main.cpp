@@ -2,32 +2,39 @@
 ///  test_shell v2.5 — 多线程命令框架
 /// =================================================================
 ///
-///  一条命令的完整旅程：
+///  启动流程：
+///
+///    main()
+///      ├─ ① InitConsole / InitLeakDetection — 平台初始化
+///      ├─ ② Config — platform::Process::ExeDir() + .cfg → 命令行覆盖
+///      ├─ ③ ModuleLifeManager — 注册内置模块 + ScanPluginDirectory()
+///      ├─ ④ ShellEngine(pool_size, workers) — 引擎组装
+///      └─ ⑤ engine.Run() — 进入事件驱动主循环（阻塞直到 /exit）
+///
+///  一条命令的完整旅程（引擎内部）：
 ///
 ///    输入 "-m:Calc -f:add -v:a|1,b|2"
 ///      │
 ///      ├─ ① CommandParser 解析成 ParmarPack
-///      ├─ ② TasksPool 拿一个空闲 Task
-///      ├─ ③ ThreadPool.Enqueue → 工人线程干活
+///      ├─ ② TasksPool::Acquire(pack) → 拿一个空闲 Task
+///      ├─ ③ ThreadPool::Enqueue → Worker 线程
 ///      │      │
 ///      │      └─ while (task->Step(bus)) {}  ← 推完所有分片
 ///      │             │
 ///      │             └─ bus.Emit("Calc.add", pack)
 ///      │                    → EventBus → Module::Execute → lambda
 ///      │
-///      ├─ ④ 工人干完 → PushResult → 归还 Task（槽位立即可复用）
-///      ├─ ⑤ 主循环 DrainResultStore → Formatter → LOG_PLAIN
-///      └─ ⑥ 主循环 cv.wait_for(ResultStore || input_queue)，零空转
+///      ├─ ④ Worker 完成 → ResultStore::PushResult → Release(task)
+///      ├─ ⑤ 主循环 DrainResults → Formatter → LOG_PLAIN
+///      └─ ⑥ 主循环 cv.wait_for(HasResults || input), 零空转
 ///
 ///  main() 只负责组装。循环逻辑在 ShellEngine 里。
 /// =================================================================
 
-#define _CRTDBG_MAP_ALLOC
+#include "core/platform/platform.h"
+#include "core/platform/process.h"
+
 #include <iostream>
-#ifdef _WIN32
-#include <windows.h>
-#include <crtdbg.h>
-#endif
 
 #include "core/Config.h"
 #include "core/ModuleLifeManager.h"
@@ -41,17 +48,16 @@ using namespace std;
 
 int main(int argc, char* argv[])
 {
-#ifdef _WIN32
-    _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-#endif
+    InitConsole();
+    InitLeakDetection();
 
     // ================================================================
     //  Config — file + CLI / 配置加载
     // ================================================================
     ShellConfig cfg;
-    cfg.LoadFromFile("test_shell.cfg");   // 可选，不存在则用默认值
+    // 从 exe 同目录加载配置文件（而非当前工作目录）
+    std::string cfg_path = platform::Process::ExeDir() + "test_shell.cfg";
+    cfg.LoadFromFile(cfg_path);
     cfg.ApplyArgs(argc, argv);            // 命令行覆盖
     cfg.Print();
 
@@ -74,9 +80,7 @@ int main(int argc, char* argv[])
 
     bus.RegisterSignal<uint32_t, bool, int, const char*, const char*>("task.result");
 
-#ifdef _WIN32
     mgr.ScanPluginDirectory(cfg.plugin_dir);
-#endif
 
     // ================================================================
     //  Engine — event-driven main loop, configured from cfg

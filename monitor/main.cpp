@@ -1,15 +1,17 @@
 /// =================================================================
-///  shell_monitor.exe — external dashboard for test_shell framework
+///  shell_monitor — 外部 FTXUI 仪表盘（跨平台）
 /// =================================================================
-#ifdef _WIN32
-#include <windows.h>
-#endif
+///
+///  通过 platform::SharedMemory::Open 读取 test_shell 的 MetricsData。
+///  跨平台：Windows File Mapping / POSIX shm_open+mmap 统一封装。
+///
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -18,6 +20,8 @@
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 
+#include "core/platform/platform.h"
+#include "core/platform/shared_memory.h"
 #include "MetricsProtocol.h"
 
 using namespace ftxui;
@@ -25,19 +29,13 @@ using namespace monitor;
 using namespace std::chrono_literals;
 
 // ---- Connect to shared memory ----
-// Keep handle alive so shared memory persists even if framework exits
-static HANDLE g_shm_handle = nullptr;
+// shared_memory_ keeps the mapping alive even if framework exits
+static std::unique_ptr<platform::SharedMemory> g_shm;
 
 static MetricsData* ConnectToSharedMemory() {
-#ifdef _WIN32
-    g_shm_handle = OpenFileMappingW(FILE_MAP_READ, FALSE, kShmName);
-    if (!g_shm_handle) return nullptr;
-    auto* d = (MetricsData*)MapViewOfFile(g_shm_handle, FILE_MAP_READ, 0, 0, 4096);
-    // DON'T CloseHandle — keep it alive so the kernel object persists
-    return d;
-#else
-    return nullptr;
-#endif
+    g_shm = platform::SharedMemory::Open(kShmName, 4096);
+    if (!g_shm) return nullptr;
+    return static_cast<MetricsData*>(g_shm->Data());
 }
 
 // ---- Format uptime ----
@@ -220,7 +218,7 @@ int main(int argc, char** argv) {
 
     running.store(false);
     if (refresh.joinable()) refresh.join();
-    if (shm) UnmapViewOfFile(shm);
+    g_shm.reset();  // unmaps + closes shared memory
     std::cout << "[monitor] Bye.\n";
     return 0;
 }

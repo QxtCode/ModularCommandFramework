@@ -7,34 +7,29 @@
 #include <unordered_map>
 #include "ModuleBaseObject.h"
 #include "ParmarPack.h"
+#include "core/platform/platform.h"
+#include "core/platform/file_system.h"
+#include "core/platform/shared_library.h"
 #include "event_bus/event_bus.h"
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 #include "modules/logging/LogModule.h"
 
 // =================================================================
-//  ModuleLifeManager — module lifecycle manager (singleton)
+//  ModuleLifeManager — 模块生命周期管理器（单例）
 // =================================================================
 //
-//  v2.4 changes:
-//    - module_map_ uses shared_ptr instead of unique_ptr.
-//      EventBus slots hold weak_ptr to the module → if the module
-//      is unloaded while a slot is in-flight, the slot detects
-//      IsExpired() and skips execution safely.
-//    - AddModule fixed: TOCTOU eliminated by holding unique_lock
-//      for the entire check+insert operation.
-//    - Slot lambdas no longer capture raw [this] — they capture
-//      a shared_ptr, and the slot's WeakRefHolder checks liveness
-//      before each call.
+//  v2.4:
+//    - shared_ptr 管理模块：EventBus Slot 用 weak_ptr 检测活跃性
+//    - unique_lock 消除 TOCTOU：check+insert 原子化
+//    - Slot lambda 捕获 shared_ptr → WeakRefHolder 安全检查
+//
+//  v2.5 (跨平台):
+//    - LoadDLLModule 用 platform::SharedLibrary (RAII)
+//      Windows: LoadLibrary / FreeLibrary
+//      Linux/macOS: dlopen / dlclose
+//    - ScanPluginDirectory 用 platform::FindFiles
+//      Windows: FindFirstFile / Linux/macOS: opendir+readdir
+//    - dll_handles_ 从 map<string, HMODULE> → map<string, unique_ptr<SharedLibrary>>
+//    - 零 #ifdef _WIN32：所有平台差异由 core/platform/ 封装
 // =================================================================
 
 class ModuleLifeManager
@@ -195,13 +190,8 @@ public:
 
         module_map_.erase(it);  // drops shared_ptr ref → may delete module
 
-        // FreeLibrary if this was a DLL module
-        auto dll = dll_handles_.find(name);
-        if (dll != dll_handles_.end())
-        {
-            FreeLibrary(dll->second);
-            dll_handles_.erase(dll);
-        }
+        // Release DLL handle (RAII: erase triggers SharedLibrary destructor)
+        dll_handles_.erase(name);
 
         std::cout << "[ModuleMgr] Module unloaded: " << name << "\n";
         LOG_INFO(std::string("Module unloaded: ") + name);
@@ -216,47 +206,39 @@ public:
 
     bool LoadDLLModule(const std::string& dll_path)
     {
-#ifdef _WIN32
-        HMODULE handle = LoadLibraryA(dll_path.c_str());
-        if (!handle)
+        auto lib = platform::SharedLibrary::Load(dll_path);
+        if (!lib)
         {
-            std::cerr << "[ModuleMgr] Failed to load DLL: " << dll_path << "\n";
-            LOG_ERROR(std::string("Failed to load DLL: ") + dll_path);
+            std::cerr << "[ModuleMgr] Failed to load library: " << dll_path << "\n";
+            LOG_ERROR(std::string("Failed to load library: ") + dll_path);
             return false;
         }
 
-        auto create = reinterpret_cast<CreateFunc>(
-            GetProcAddress(handle, "CreateModule"));
+        auto create = lib->GetFunction<CreateFunc>("CreateModule");
         if (!create)
         {
-            std::cerr << "[ModuleMgr] DLL missing CreateModule: " << dll_path << "\n";
-            FreeLibrary(handle);
-            return false;
+            std::cerr << "[ModuleMgr] Library missing CreateModule: " << dll_path << "\n";
+            return false;  // lib destructor closes handle
         }
 
         ModuleBaseObject* raw = create();
         if (!raw)
         {
             std::cerr << "[ModuleMgr] CreateModule() returned null.\n";
-            FreeLibrary(handle);
-            return false;
+            return false;  // lib destructor closes handle
         }
 
         // Wrap in unique_ptr → AddModule converts to shared_ptr
         bool ok = AddModule(std::unique_ptr<ModuleBaseObject>(raw));
         if (ok)
         {
-            dll_handles_[raw->GetName()] = handle;
+            dll_handles_[raw->GetName()] = std::move(lib);
             return true;
         }
 
         // AddModule failed — module already deleted by unique_ptr destructor
-        FreeLibrary(handle);
+        // lib destructor closes handle
         return false;
-#else
-        std::cerr << "[ModuleMgr] DLL loading only supported on Windows.\n";
-        return false;
-#endif
     }
 
     // ============================================================
@@ -266,25 +248,12 @@ public:
     {
         int loaded = 0;
 
-#ifdef _WIN32
-        std::string search = dir_path + "\\*.dll";
-
-        WIN32_FIND_DATAA fd;
-        HANDLE hFind = FindFirstFileA(search.c_str(), &fd);
-        if (hFind == INVALID_HANDLE_VALUE) return 0;
-
-        do
-        {
-            std::string dll_path = dir_path + "\\" + fd.cFileName;
-            if (LoadDLLModule(dll_path))
+        std::string pattern = "*" + std::string(kSharedLibExt);
+        auto files = platform::FindFiles(dir_path, pattern);
+        for (const auto& file : files) {
+            if (LoadDLLModule(file))
                 loaded++;
         }
-        while (FindNextFileA(hFind, &fd));
-
-        FindClose(hFind);
-#else
-        std::cerr << "[ModuleMgr] Plugin scanning only supported on Windows.\n";
-#endif
 
         std::cout << "[ModuleMgr] Plugins loaded: " << loaded << "\n";
         return loaded;
@@ -300,7 +269,7 @@ private:
 
     // v2.4: shared_ptr so EventBus slots can hold weak_ptr for lifetime checks
     std::unordered_map<std::string, std::shared_ptr<ModuleBaseObject>> module_map_;
-    std::unordered_map<std::string, HMODULE> dll_handles_;
+    std::unordered_map<std::string, std::unique_ptr<platform::SharedLibrary>> dll_handles_;
     mutable std::shared_mutex mutex_;
 };
 
@@ -316,10 +285,10 @@ private:
 //  DestroyModule on a shared_ptr-managed module would double-delete.
 //  It is kept for backward compatibility with external users who may
 //  manage module lifetime manually.
-#define EXPORT_MODULE(ClassName)                                              \
-    extern "C" __declspec(dllexport) ModuleBaseObject* CreateModule() {       \
-        return new ClassName();                                               \
-    }                                                                         \
-    extern "C" __declspec(dllexport) void DestroyModule(ModuleBaseObject* m) {\
-        if (m) { m->OnShutdown(); delete m; } /* DEPRECATED in v2.4 */        \
+#define EXPORT_MODULE(ClassName)                                         \
+    extern "C" PLATFORM_EXPORT ModuleBaseObject* CreateModule() {        \
+        return new ClassName();                                          \
+    }                                                                    \
+    extern "C" PLATFORM_EXPORT void DestroyModule(ModuleBaseObject* m) { \
+        if (m) { m->OnShutdown(); delete m; } /* DEPRECATED in v2.4 */   \
     }

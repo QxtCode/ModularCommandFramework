@@ -4,14 +4,18 @@
 ///
 ///  优先级：命令行参数 > 配置文件 > 默认值
 ///
-///  INI 配置文件格式（test_shell.cfg，放可执行文件旁边）：
+///  INI 配置文件格式（test_shell.cfg）：
 ///    pool_size  = 16
 ///    workers    = 8
 ///    plugin_dir = ./my_plugins
 ///    log_level  = DEBUG
 ///
+///  路径解析由调用方负责。main.cpp 使用 platform::Process::ExeDir()
+///  定位 exe 同目录的配置文件，CMake POST_BUILD 自动将其拷贝到输出目录。
+///  这样无论从哪个工作目录启动，配置文件都能被正确找到。
+///
 ///  # 开头是注释，空行忽略。
-///  命令行覆盖用 --key=value 语法。
+///  命令行覆盖用 --key=value 语法（优先级高于配置文件）。
 /// =================================================================
 
 #pragma once

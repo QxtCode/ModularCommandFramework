@@ -138,3 +138,40 @@ int main() {
 ```
 
 main.cpp went from 262 lines to 74. The loop logic, done_queue, input thread, and cv sync live in ShellEngine.
+
+## Platform Abstraction Layer (v2.5)
+
+All OS-specific APIs are centralized in `core/platform/`, providing a unified interface:
+
+```
+core/platform/
+├── platform.h              # Detection macros + PLATFORM_EXPORT/IMPORT
+├── file_system.h/.cpp      # FindFiles / FileExists / NormalizePath
+├── shared_library.h/.cpp   # RAII wrapper for LoadLibrary / dlopen
+├── shared_memory.h/.cpp    # RAII wrapper for CreateFileMapping / shm_open+mmap
+├── process.h/.cpp          # Launch / CpuTimeUs / ExePath / ExeDir
+└── console.cpp             # InitConsole / InitLeakDetection
+```
+
+- **No `#ifdef _WIN32` outside this directory** — the entire framework uses `PLATFORM_WINDOWS`/`PLATFORM_LINUX`/`PLATFORM_MACOS`
+- **RAII everywhere** — `SharedLibrary` and `SharedMemory` clean up in destructors
+- **`PLATFORM_EXPORT`** replaces `__declspec(dllexport)` for cross-platform symbol visibility
+- **Plugin scanning** uses `FindFiles("plugins", "*.dll" or "*.so")` — matches the platform's extension automatically via `kSharedLibExt`
+
+### Example: before vs after
+
+```cpp
+// Before (Windows-only, manual cleanup):
+#ifdef _WIN32
+HMODULE handle = LoadLibraryA(path);
+auto create = (CreateFunc*)GetProcAddress(handle, "CreateModule");
+// ... use module ...
+FreeLibrary(handle);
+#endif
+
+// After (cross-platform, RAII):
+auto lib = platform::SharedLibrary::Load(path);
+auto create = lib->GetFunction<CreateFunc>("CreateModule");
+// ... use module ...
+// lib destructor calls FreeLibrary or dlclose automatically
+```

@@ -2,6 +2,18 @@
 
 A module is **just a C++ class** with a name and some functions.
 
+## Cross-Platform
+
+test_shell runs on **Windows, Linux, and macOS**. The same module code compiles everywhere:
+
+| Platform | Plugin extension | Build command |
+|----------|:-----------------:|---------------|
+| Windows  | `.dll` | `cmake --preset debug` |
+| Linux    | `.so`  | `cmake --preset debug` |
+| macOS    | `.dylib` | `cmake --preset debug` |
+
+All platform differences are handled by `core/platform/` — you write module logic once.
+
 ## Minimal Module (3 things)
 
 ```cpp
@@ -34,7 +46,7 @@ public:
 mgr.AddModule(std::make_unique<MyModule>());
 ```
 
-### DLL plugin: drop in `plugins/`
+### Plugin: one macro, drop in `plugins/`
 
 ```cpp
 // MyModule.cpp
@@ -43,7 +55,23 @@ mgr.AddModule(std::make_unique<MyModule>());
 EXPORT_MODULE(MyModule)
 ```
 
-Compile to `.dll`, put in `plugins/`. Framework auto-loads it on startup.
+Compile to shared library (`.dll` / `.so` / `.dylib`), put in `plugins/`. Framework auto-loads it on startup via `ScanPluginDirectory`. The `EXPORT_MODULE` macro uses `PLATFORM_EXPORT` from the platform layer — works on all platforms.
+
+## Build
+
+```bash
+# Configure
+cmake --preset debug
+
+# Build
+cmake --build --preset debug
+
+# Run
+./out/build/debug/test_shell     # Linux/macOS
+out\build\debug\test_shell.exe    # Windows
+```
+
+> **Windows users**: you can also just double-click `rebuild_all.bat`.
 
 ## Run it
 

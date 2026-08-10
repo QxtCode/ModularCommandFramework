@@ -1,28 +1,32 @@
 /// =================================================================
-///  MetricsCollector — writes framework metrics to shared memory
+///  MetricsCollector — 跨平台框架指标收集器
 /// =================================================================
 ///
-///  Plug-and-play IModule. Add it in main.cpp:
+///  即插即用 IModule。在 main.cpp 中：
 ///    mgr.AddModule(std::make_unique<MetricsCollector>());
 ///
-///  Every ~500ms it snapshots framework state into a MetricsData
-///  struct in shared memory. An external shell_monitor.exe reads it.
+///  主循环每次迭代通过 Flush() 将框架状态快照写入共享内存。
+///  外部 shell_monitor 进程通过 platform::SharedMemory 读取。
+///
+///  跨平台：Windows 用 File Mapping，Linux/macOS 用 shm_open+mmap，
+///  由 core/platform/shared_memory.h 统一封装。
 ///
 #pragma once
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
 #include <ctime>
+#include <memory>
 #include <string>
 #include <thread>
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 #include "core/ModuleBaseObject.h"
+#include "core/platform/platform.h"
+#include "core/platform/file_system.h"
+#include "core/platform/process.h"
+#include "core/platform/shared_memory.h"
 #include "monitor/MetricsProtocol.h"
-#include <cstdarg>
 
 class MetricsCollector : public ModuleBaseObject
 {
@@ -30,37 +34,20 @@ public:
     const char* GetName() const override { return "MetricsCollector"; }
 
     ~MetricsCollector() override {
-        // Stop timer thread first, then clean up
         StopTimer();
-        if (shm_data_) { shm_data_->magic = 0; }
+        // shm_ destructor handles cleanup; OnShutdown() already set magic=0
     }
 
     bool OnInit() override
     {
-#ifdef _WIN32
-        // Create named shared memory (one 4KB page)
-        // If it already exists (from shell_monitor or simulate_load),
-        // just open it — don't fail.
-        shm_handle_ = CreateFileMappingW(
-            INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
-            0, 4096, monitor::kShmName);
-        if (!shm_handle_) {
-            // Try opening existing read-only mapping
-            shm_handle_ = OpenFileMappingW(FILE_MAP_WRITE, FALSE, monitor::kShmName);
-            if (!shm_handle_) {
-                std::cerr << "[MetricsCollector] Cannot create or open shared memory (err="
-                          << GetLastError() << ")" << std::endl;
-                return false;
-            }
-        }
-
-        shm_data_ = static_cast<monitor::MetricsData*>(
-            MapViewOfFile(shm_handle_, FILE_MAP_WRITE, 0, 0, 4096));
-        if (!shm_data_) {
-            std::cerr << "[MetricsCollector] MapViewOfFile failed (err="
-                      << GetLastError() << ")" << std::endl;
+        // Create or open named shared memory (one 4KB page)
+        shm_ = platform::SharedMemory::Create(monitor::kShmName, 4096);
+        if (!shm_) {
+            std::cerr << "[MetricsCollector] Cannot create shared memory" << std::endl;
             return false;
         }
+
+        shm_data_ = static_cast<monitor::MetricsData*>(shm_->Data());
 
         // Init header
         std::memset(shm_data_, 0, sizeof(monitor::MetricsData));
@@ -78,7 +65,6 @@ public:
         REGISTER_FUNC("show", "Show in-terminal metrics dashboard", {
             auto* m = GetMetrics();
             if (!m) { pack->success = false; pack->error.message = "Metrics not available"; return; }
-            // Read a fresh snapshot from shared memory
             monitor::MetricsData snap{};
             if (!monitor::TryRead(m, &snap)) {
                 pack->success = false;
@@ -126,51 +112,38 @@ public:
         });
 
         REGISTER_FUNC("dashboard", "Launch external FTXUI dashboard (opens new window)", {
-            // 获取 shell_monitor.exe 路径（与 test_shell.exe 同目录）
-            char exe_path[MAX_PATH];
-            GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
-            std::string dir(exe_path);
-            dir = dir.substr(0, dir.find_last_of("\\/") + 1);
-            std::string monitor_path = dir + "shell_monitor.exe";
+            std::string dir = platform::Process::ExeDir();
+            std::string monitor_path = dir + "shell_monitor";
+            if (PLATFORM_WINDOWS) monitor_path += ".exe";  // compile-time constant
 
-            // 检查文件是否存在
-            if (GetFileAttributesA(monitor_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            if (!platform::FileExists(monitor_path)) {
                 pack->success = false;
                 pack->error.code = ErrorCode::INTERNAL_ERROR;
-                pack->error.message = "shell_monitor.exe not found at: " + monitor_path;
+                pack->error.message = "shell_monitor not found at: " + monitor_path;
                 return;
             }
 
-            // 启动独立进程（新控制台窗口）
-            STARTUPINFOA si{};
-            si.cb = sizeof(si);
-            PROCESS_INFORMATION pi{};
-            std::string cmd = monitor_path;  // CreateProcess 可能修改，拷贝一份
-
-            if (CreateProcessA(nullptr, cmd.data(), nullptr, nullptr,
-                              FALSE, CREATE_NEW_CONSOLE, nullptr,
-                              dir.c_str(), &si, &pi)) {
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
+            if (platform::Process::Launch(monitor_path, "", dir,
+                                          PLATFORM_WINDOWS)) {  // newConsole on Windows
                 pack->success = true;
-                pack->return_value = "Dashboard launched in new window (close with q)";
+                pack->return_value = "Dashboard launched";
             } else {
                 pack->success = false;
                 pack->error.code = ErrorCode::INTERNAL_ERROR;
-                pack->error.message = "Failed to launch shell_monitor.exe (err="
-                    + std::to_string(GetLastError()) + ")";
+                pack->error.message = "Failed to launch shell_monitor";
             }
         });
 
         return true;
-#else
-        return false;  // shared memory = Windows only
-#endif
     }
 
     void OnShutdown() override {
         StopTimer();
-        if (shm_data_) shm_data_->magic = 0;
+        if (shm_data_) {
+            shm_data_->magic = 0;
+            shm_data_ = nullptr;  // prevent dangling pointer access in dtor
+        }
+        shm_.reset();
     }
 
     /// Expose shared memory pointer for direct read by external code (tests)
@@ -181,7 +154,6 @@ public:
     /// Push an event into the ring buffer (thread-safe via BeginWrite/EndWrite)
     void PushEvent(const char* fmt, ...)
     {
-#ifdef _WIN32
         if (!shm_data_) return;
         char buf[monitor::kEventSize];
         va_list args;
@@ -194,7 +166,6 @@ public:
         std::strncpy(shm_data_->events[idx], buf, monitor::kEventSize - 1);
         shm_data_->event_head++;
         monitor::EndWrite(shm_data_);
-#endif
     }
 
     // Setters for framework stats (called by main loop / other components)
@@ -213,7 +184,6 @@ public:
 
     /// Write current state to shared memory (called from main loop)
     void Flush() {
-#ifdef _WIN32
         if (!shm_data_) return;
         using namespace std::chrono;
         auto now = steady_clock::now().time_since_epoch();
@@ -236,7 +206,6 @@ public:
         shm_data_->last_error[0]   = '\0';
         shm_data_->top_module[0]   = '\0';
         monitor::EndWrite(shm_data_);
-#endif
     }
 
 private:
@@ -245,12 +214,12 @@ private:
         if (timer_.joinable()) timer_.join();
     }
 
-#ifdef _WIN32
     void TimerLoop()
     {
-        if (!shm_data_) return;  // safety: shared memory not initialized
+        if (!shm_data_) return;
         using namespace std::chrono;
         auto t0 = steady_clock::now();
+        uint64_t last_cpu = platform::Process::CpuTimeUs();
         uint32_t c = 0;
         while (running_.load())
         {
@@ -259,19 +228,20 @@ private:
             auto now = steady_clock::now();
             c++;
             monitor::BeginWrite(shm_data_);
-            // CPU via GetProcessTimes
-            FILETIME fk, fu;
-            GetProcessTimes(GetCurrentProcess(), nullptr, nullptr, &fk, &fu);
-            static uint64_t lk = 0, lu = 0;
-            uint64_t k = ((uint64_t)fk.dwHighDateTime << 32) | fk.dwLowDateTime;
-            uint64_t u = ((uint64_t)fu.dwHighDateTime << 32) | fu.dwLowDateTime;
+            // CPU via platform::Process
+            uint64_t cur_cpu = platform::Process::CpuTimeUs();
             uint32_t cpu = 0;
-            if (lk) cpu = uint32_t(((k - lk) + (u - lu)) / (500 * 100));
-            lk = k; lu = u;
+            if (last_cpu) {
+                uint64_t delta_us = cur_cpu - last_cpu;
+                // Original formula: delta_100ns / 50000
+                // delta_us = delta_100ns / 10, so: delta_us / 5000
+                cpu = static_cast<uint32_t>(delta_us / 5000);
+            }
+            last_cpu = cur_cpu;
 
             shm_data_->uptime_ms       = duration_cast<milliseconds>(now - t0).count();
             shm_data_->cpu_percent     = cpu;
-            shm_data_->working_set_kb  = 0;  // TODO: GetProcessMemoryInfo
+            shm_data_->working_set_kb  = 0;
             shm_data_->thread_count    = static_cast<uint32_t>(std::thread::hardware_concurrency());
             shm_data_->worker_threads  = worker_threads_;
             shm_data_->stuck_threads   = stuck_threads_;
@@ -289,9 +259,8 @@ private:
         }
     }
 
-    HANDLE shm_handle_ = nullptr;
+    std::unique_ptr<platform::SharedMemory> shm_;
     monitor::MetricsData* shm_data_ = nullptr;
-#endif
 
     std::thread timer_;
     std::atomic<bool> running_{false};

@@ -137,7 +137,10 @@ inline void ShellEngine::Shutdown() {
     running_.store(false);
     cv_.notify_all();
     if (input_thread_.joinable())
-        input_thread_.detach();  // 线程可能阻塞在 getline，不能 join
+        // detach 而非 join：输入线程可能阻塞在 getline(std::cin)，
+        // 此时 stdin 无数据则线程永不返回，join 会永久阻塞主线程。
+        // detach 后线程继续阻塞在 getline，进程退出时 OS 自动回收。
+        input_thread_.detach();
 
     // 空闲 drain：等飞行中任务完成（最多 5 秒）
     constexpr int kMaxWait = 50;

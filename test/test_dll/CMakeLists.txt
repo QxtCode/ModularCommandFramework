@@ -1,5 +1,5 @@
-# 测试用 DLL 模块 — 编译为共享库供 test_runner 加载
-# 需要 link eventbus（DLL singleton 在此）
+# 测试用共享库模块 — 跨平台 (.dll/.so/.dylib)
+# 使用 PLATFORM_EXPORT 导出，供 test_runner 加载
 
 add_library(TestDLLModule SHARED
     TestDLLModule.cpp
