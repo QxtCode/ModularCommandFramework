@@ -53,6 +53,7 @@ add_executable(test_runner
     core/stress_gradual_test.cpp
     core/idle_resource_test.cpp
     core/task_pause_test.cpp
+    core/task_progress_test.cpp
     core/shm_protocol_test.cpp
     core/monitor_integration_test.cpp
     core/cpu_metrics_test.cpp

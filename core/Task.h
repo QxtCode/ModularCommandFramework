@@ -90,8 +90,16 @@ public:
         shards_.push_back(std::move(pack));
         current_ = 0;
         state_   = State::IDLE;
+        declared_total_.store(0);  // v2.6: 新任务从零开始，防旧声明残留
         return true;
     }
+
+    // ============================================================
+    //  预声明总分片数（v2.6）
+    // ============================================================
+    /// 模块在执行第一个 shard 时调用，告诉 Task 一共会有多少个分片。
+    /// 不调用则退化为动态模式（与 v2.5 行为完全一致）。
+    void SetTotalShards(size_t total) { declared_total_.store(total); }
 
     // ============================================================
     //  动态追加分片（模块在 Slot 执行期间调用）
@@ -127,6 +135,7 @@ public:
         shards_.clear();
         current_ = 0;
         id_.store(0);
+        declared_total_.store(0);
     }
 
     // ============================================================
@@ -141,15 +150,23 @@ public:
     State    GetState()         const { return state_.load(); }
     uint32_t GetID()            const { return id_.load(); }
     size_t   GetCurrentShard()  const { std::lock_guard lock(shards_mutex_); return current_; }
-    size_t   GetTotalShards()   const { std::lock_guard lock(shards_mutex_); return shards_.size(); }
+    size_t   GetTotalShards()   const {
+        size_t dt = declared_total_.load();
+        if (dt > 0) return dt;
+        std::lock_guard lock(shards_mutex_);
+        return shards_.size();
+    }
     void     SetID(uint32_t id)       { id_.store(id); }
 
-    /// 进度 = 已完成分片数 / 总分片数
+    /// 进度 = 已完成分片数 / max(声明总数, 实际分片数)，封顶 1.0
     float GetProgress() const
     {
+        size_t total = declared_total_.load();
         std::lock_guard lock(shards_mutex_);
-        size_t n = shards_.size();
-        return n > 0 ? static_cast<float>(current_) / n : 0.0f;
+        if (total == 0) total = shards_.size();
+        if (total == 0) return 0.0f;
+        float p = static_cast<float>(current_) / total;
+        return p > 1.0f ? 1.0f : p;
     }
 
     /// 获取当前正在执行的分片参数包（执行后读取结果用）
@@ -175,6 +192,9 @@ private:
     // ---- 状态（原子变量，线程安全）----
     std::atomic<State>    state_{ State::IDLE };
     std::atomic<uint32_t> id_   { 0 };
+
+    // ---- 预声明总分片数（0 = 未声明，走动态模式）----
+    std::atomic<size_t> declared_total_{0};
 
     // ---- 对象池索引（O(1) 归还）----
     // pool_index_ 在 TasksPool::CreateTasks() 时设置，
