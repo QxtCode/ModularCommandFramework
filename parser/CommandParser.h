@@ -11,6 +11,9 @@
 //  CommandParser — 多源命令解析器（单例）
 // =================================================================
 //
+//  在数据流中的位置：输入源 → CommandParser → PopPack → ShellEngine::SubmitTask
+//  ShellEngine::ProcessInput 是消费者，通过 TryPopPack 非阻塞取解析结果。
+//
 //  【设计思想：为什么有两个入口？】
 //
 //  命令可以来自任何地方：

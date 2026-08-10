@@ -37,31 +37,32 @@ Help: `-m:MetricsCollector -f:help`
 [OK] Dashboard launched in new window (close with q)
 ```
 
-Uses `CreateProcess` + `CREATE_NEW_CONSOLE` to spawn `shell_monitor.exe` as an independent process. It reads shared memory in real time via FTXUI — no framework task slots consumed, no console input blocked.
+Uses `platform::Process::Launch` to spawn `shell_monitor` as an independent process (new console on Windows, same terminal on Linux/macOS). It reads shared memory in real time via FTXUI — no framework task slots consumed, no console input blocked.
 
 Manual launch also works:
 ```
-Terminal 1: ./test_shell.exe
-Terminal 2: ./shell_monitor.exe
+Terminal 1: ./test_shell
+Terminal 2: ./shell_monitor
 ```
 
 ## How it works
 
 ```
-test_shell.exe                    shell_monitor.exe
+test_shell                        shell_monitor
 ┌──────────────────┐              ┌────────────────────┐
 │ MetricsCollector │   shared     │ main()             │
-│   Flush()        │──memory──→  │   读取 MetricsData   │
-│   主循环每次迭代   │  test_shell │   FTXUI 渲染仪表盘   │
+│   Flush()        │──memory──→  │   read MetricsData │
+│   per main loop  │  test_shell │   FTXUI dashboard  │
 └──────────────────┘  _metrics    └────────────────────┘
 ```
 
 - `MetricsCollector` is a regular IModule — loaded like any other module
-- Writes to named shared memory (`CreateFileMapping`)
-- Monitor reads from the same memory (`OpenFileMapping`)
-- Seqlock protocol ensures consistent reads without locks
+- Writes to named shared memory via `platform::SharedMemory` (wraps `CreateFileMapping`/`shm_open+mmap`)
+- Monitor reads from the same memory via `platform::SharedMemory::Open`
+- Seqlock protocol (`BeginWrite`/`EndWrite`/`TryRead`) ensures consistent reads without locks
 - Framework crash → monitor shows "NO SIGNAL"
 - Monitor crash → framework unaffected
+- **Cross-platform**: same protocol works on Windows (File Mapping) and POSIX (`shm_open`)
 
 ## MetricsCollector interface
 

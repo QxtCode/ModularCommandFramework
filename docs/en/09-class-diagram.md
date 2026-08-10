@@ -78,7 +78,8 @@
    │  + ScanPluginDirectory(dir)         │            │
    │  + GetModule(name) : ModuleBase*    │            │
    │  - module_map_: map<string, shr_ptr>│            │
-   │  - dll_handles_: map<string, HMOD>  │            │
+   │  - dll_handles_: map<string,        │            │
+   │           unique_ptr<SharedLibrary>>│            │
    └──────────────┬──────────────────────┘            │
                   │ 管理                                │
                   ▼                                    │

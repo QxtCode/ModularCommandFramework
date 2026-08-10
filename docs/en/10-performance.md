@@ -1,6 +1,6 @@
 # Performance & Limits — test_shell v2.5
 
-> Measured on: Windows 11, Intel i7-13700H (16 logical cores), Debug build
+> Measured on: Intel i7-13700H (16 logical cores), Debug build, cross-platform
 
 ## Peak throughput
 

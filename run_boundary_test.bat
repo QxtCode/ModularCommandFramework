@@ -5,7 +5,7 @@ REM  Run from VS Developer Command Prompt, or just double-click.
 REM
 REM  Memory leaks: check VS Output window (Debug) after run.
 REM ============================================================
-cd /d "%~dp0out\build\x64-Debug"
+cd /d "%~dp0out\build\debug"
 echo.
 echo === Running boundary tests ===
 echo.

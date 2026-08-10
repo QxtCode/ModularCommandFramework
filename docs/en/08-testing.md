@@ -3,11 +3,13 @@
 ## Quick start
 
 ```bash
-# Build tests
-cmake --build out/build --target test_runner -j 8
+# Configure + build (uses CMakePresets.json)
+cmake --preset debug
+cmake --build --preset debug
 
 # Run all tests (excluding slow stress tests)
-./test_runner --gtest_filter=-StressGraduated.*:Stress60s.*
+cd out/build/debug
+./test_runner --gtest_filter=-StressGraduated.*:Stress60s.*:PeakStressTest.*
 
 # Run a specific suite
 ./test_runner --gtest_filter=ShellEngineTest.*
@@ -19,7 +21,7 @@ cmake --build out/build --target test_runner -j 8
 ./test_runner --gtest_filter=ShellEngineTest.* --gtest_repeat=3
 ```
 
-## Test suite overview (290 tests, 34 suites)
+## Test suite overview (373 tests, 47 suites)
 
 | Suite | Count | What it tests |
 |-------|-------|---------------|
@@ -33,7 +35,12 @@ cmake --build out/build --target test_runner -j 8
 | **TasksPoolTest** | 7 | Acquire/Release, pool exhaustion, edge cases |
 | **CmdParserTest** | 27 | TXT parsing, SendPack, custom formats, concurrent access |
 | **BusTest** | 24 | Register/Emit/Link/Remove signals, type safety, weak slots |
-| *Others* | ~149 | ThreadPool, Formatter, Logger, IModule, Metrics, etc. |
+| **PlatformFileSystem** | 14 | FindFiles, FileExists, NormalizePath (cross-platform) |
+| **PlatformSharedLibrary** | 9 | SharedLibrary Load/GetFunction, concurrent stress |
+| **PlatformSharedMemory** | 10 | SharedMemory Create/Open/ReadWrite, concurrent |
+| **PlatformProcess** | 9 | Process Launch/ExePath/CpuTimeUs |
+| **PlatformBoundary** | 41 | Boundary, smoke, memory, concurrency edge cases |
+| *Others* | ~120 | ThreadPool, Formatter, Logger, IModule, Metrics, etc. |
 
 ## Writing new tests
 
@@ -175,4 +182,4 @@ store.Clear();
    ```cmake
    core/your_test.cpp
    ```
-3. Reconfigure and build: `cmake -S . -B out/build && cmake --build out/build --target test_runner`
+3. Build: `cmake --build --preset debug --target test_runner`

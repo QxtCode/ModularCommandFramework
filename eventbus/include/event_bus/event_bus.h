@@ -11,15 +11,19 @@
 #include "signal.h"
 
 // =================================================================
-//  DLL import/export macros
+//  跨平台符号导出 — 由 platform.h 统一
+//  Windows: __declspec(dllexport/dllimport)
+//  Linux/macOS: __attribute__((visibility("default")))
 // =================================================================
+#include "core/platform/platform.h"
+
 #ifdef EVENTBUS_DLL_EXPORTS
-#define EVENTBUS_API __declspec(dllexport)
+#define EVENTBUS_API PLATFORM_EXPORT
 #else
-#define EVENTBUS_API __declspec(dllimport)
+#define EVENTBUS_API PLATFORM_IMPORT
 #endif
 
-/// Get EventBus singleton pointer (lives in eventbus.dll)
+/// 获取 EventBus 单例指针（位于 eventbus 共享库中）
 extern "C" EVENTBUS_API void* GetEventBusPtr();
 
 // =================================================================

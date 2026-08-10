@@ -1,4 +1,12 @@
-# Test runner — uses FetchContent to get gtest
+# ============================================================
+#  test_runner — 单元测试可执行文件
+# ============================================================
+#  使用 FetchContent 自动下载 GoogleTest (v1.15.2, 从 gitee 镜像)。
+#  FETCHCONTENT_UPDATES_DISCONNECTED=ON 避免重复下载。
+#
+#  测试 DLL 自动拷贝: POST_BUILD 将 eventbus.dll + TestDLLModule.dll
+#  复制到 test_runner.exe 同目录，测试中通过 CWD 定位。
+#  回退路径 out/build/debug（匹配 CMakePresets.json binaryDir）。
 
 include(FetchContent)
 
@@ -54,6 +62,11 @@ add_executable(test_runner
     core/shell_engine_test.cpp
     core/peak_stress_test.cpp
     sdk/imodule_test.cpp
+    core/platform_file_system_test.cpp
+    core/platform_shared_library_test.cpp
+    core/platform_shared_memory_test.cpp
+    core/platform_process_test.cpp
+    core/platform_boundary_test.cpp
 )
 
 target_include_directories(test_runner PRIVATE
@@ -68,11 +81,13 @@ target_include_directories(test_runner PRIVATE
 )
 
 target_link_libraries(test_runner PRIVATE
+    platform_utils
     eventbus
     GTest::gtest
     GTest::gtest_main
     Threads::Threads
     psapi
+    ${PLATFORM_LIBS}
 )
 
 target_compile_features(test_runner PUBLIC cxx_std_20)

@@ -1,17 +1,18 @@
-/// simulate — cycles through load scenarios so you can watch the dashboard
-/// Build: added to monitor/CMakeLists.txt, runs as simulate_load.exe
+/// simulate_load — 负载场景模拟器（跨平台）
+/// 循环切换负载场景供 shell_monitor 仪表盘观察。
+/// 通过 platform::SharedMemory 写入 MetricsData。
+/// 构建: cmake --build --preset debug --target simulate_load
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <thread>
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
+#include "core/platform/platform.h"
+#include "core/platform/shared_memory.h"
 #include "MetricsProtocol.h"
 
 using namespace monitor;
@@ -21,15 +22,13 @@ int main() {
     std::cout << "=== Load Simulator ===\n";
     std::cout << "Cycling through scenarios. Watch your shell_monitor.exe dashboard!\n\n";
 
-#ifdef _WIN32
     // Connect to existing shared memory (test_shell.exe must be running)
-    HANDLE h = OpenFileMappingW(FILE_MAP_WRITE, FALSE, kShmName);
-    if (!h) {
-        h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
-                                0, 4096, kShmName);
-        std::cout << "[!] Created new shared memory (test_shell.exe not detected)\n";
+    auto shm_obj = platform::SharedMemory::Create(kShmName, 4096);
+    if (!shm_obj) {
+        std::cerr << "Cannot create shared memory\n";
+        return 1;
     }
-    auto* shm = (MetricsData*)MapViewOfFile(h, FILE_MAP_WRITE, 0, 0, 4096);
+    auto* shm = static_cast<MetricsData*>(shm_obj->Data());
     memset(shm, 0, sizeof(MetricsData));
     shm->magic = kMagic;
     shm->seq   = 0;
@@ -87,11 +86,9 @@ int main() {
         }
     }
 
-    // Signal shutdown but keep the memory alive for monitor
+    // Signal shutdown
     shm->magic = 0;
-    // DON'T unmap/close — monitor may still be reading.
-    // OS cleans up when all handles are closed (process exit).
-#endif
+    // shm_obj destructor handles cleanup
 
     std::cout << "\nDone! Monitor should show NO SIGNAL now.\n";
     std::cout << "(Restart test_shell.exe to clear it)\n";

@@ -1,20 +1,19 @@
 /// =================================================================
-///  MetricsProtocol.h — shared memory protocol
+///  MetricsProtocol.h — 共享内存协议（跨平台）
 /// =================================================================
 ///
-///  Included by BOTH test_shell.exe AND shell_monitor.exe.
-///  Defines the shared memory layout used for cross-process metrics.
+///  test_shell 和 shell_monitor 共同引用，定义跨进程指标共享内存布局。
+///  跨平台：Windows File Mapping 和 POSIX shm_open+mmap 均支持。
 ///
-///  Versioned snapshot pattern (simpler than seqlock, no volatile):
-///    Writer: seq++ (odd) → memcpy data → seq++ (even)
-///    Reader: while(seq odd){} → s1=seq → memcpy snapshot → s2=seq
-///            if s1 != s2 → retry
+///  SeqLock 快照模式（无锁）:
+///    Writer: seq++ (奇数) → 写数据 → seq++ (偶数)
+///    Reader: 等 seq 偶数 → s1=seq → memcpy 快照 → s2=seq
+///            if s1 != s2 → 重试
 ///
-///  In-process: fences ensure cross-thread visibility.
-///  Cross-process: Windows guarantees MapViewOfFile coherence.
+///  跨线程: atomic_thread_fence 保证可见性。
+///  跨进程: MapViewOfFile (Windows) / mmap MAP_SHARED (POSIX) 保证一致性。
 ///
-///  All types are trivially copyable (no std::string, no pointers).
-///  Struct fits in one 4KB page.
+///  所有类型可平凡复制（无 std::string，无指针），结构体 ≤ 4KB。
 ///
 #pragma once
 #include <atomic>
@@ -27,7 +26,7 @@ constexpr uint32_t kMagic       = 0xFEEDBEEF;
 constexpr uint32_t kMaxEvents   = 8;
 constexpr uint32_t kEventSize   = 128;
 constexpr uint32_t kMaxNameLen  = 64;
-constexpr const wchar_t* kShmName = L"test_shell_metrics";
+constexpr const char* kShmName = "test_shell_metrics";
 
 #pragma pack(push, 1)
 struct MetricsData

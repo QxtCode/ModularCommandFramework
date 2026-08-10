@@ -1,0 +1,88 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "description": "Debug build with Ninja (default)",
+      "generator": "Ninja",
+      "binaryDir": "out/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_STANDARD": "20"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Optimized release build",
+      "generator": "Ninja",
+      "binaryDir": "out/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "20"
+      }
+    },
+    {
+      "name": "debug-vs",
+      "displayName": "Debug (VS IDE)",
+      "description": "Debug build with Visual Studio generator (for IDE debugging)",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "out/build/debug-vs",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "20"
+      }
+    },
+    {
+      "name": "debug-make",
+      "displayName": "Debug (Make)",
+      "description": "Debug build with Unix Makefiles (Linux/macOS fallback)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "out/build/debug-make",
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_STANDARD": "20"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "displayName": "Build Debug",
+      "description": "Build test_shell + test_runner + shell_monitor",
+      "targets": ["test_shell", "test_runner", "shell_monitor"]
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "displayName": "Build Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "displayName": "Test Debug",
+      "description": "Run all tests (excluding slow stress)",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "name": "StressGraduated.*|Stress60s.*|PeakStressTest.*"
+        }
+      }
+    }
+  ]
+}
