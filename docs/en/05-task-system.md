@@ -64,6 +64,43 @@ Same granularity: current shard completes, next shard skipped.
 
 C++ has no safe thread termination. If a shard enters an infinite loop, `Cancel()` won't stop it — it only prevents the NEXT shard. Solution: keep shards small (< 100ms).
 
+## ITaskStore — Task State Persistence (v2.6 design, pending integration)
+
+Currently all Task state lives in memory. Process exit → PAUSED tasks and queued commands are lost.
+ITaskStore is a pluggable persistence layer:
+
+```
+ITaskPersistence          ITaskScheduler
+  Save(task_id, snapshot)  Schedule(task_id, time)
+  Load(task_id) → snapshot PollDue(now) → due list
+  Delete(task_id)          NextWakeup(now) → cv timeout
+  LoadAll() → restore list
+
+NullPersistence           NullScheduler         ← default, zero overhead
+FilePersistence           TimerWheel             ← lightweight (planned)
+SqlitePersistence         SqliteScheduler        ← advanced (planned)
+```
+
+### Usage (planned)
+
+```cpp
+// main.cpp — restore pending tasks on startup
+engine.SetTaskPersistence(new FilePersistence("tasks/"));
+auto pending = taskStore->LoadAll();  // PAUSED/FAILED tasks from last exit
+for (auto& rec : pending)
+    engine.RestoreTask(rec);          // re-insert into pool
+
+// Delayed tasks
+engine.SetTaskScheduler(new TimerWheelScheduler());
+engine.ScheduleTask(task_id, now + 3600s);  // execute in 1 hour
+```
+
+### Current Status
+
+Interfaces and Null implementations are ready (`core/ITaskPersistence.h` / `core/NullTaskStore.h`).
+Not yet integrated into ShellEngine — all behavior matches previous versions: tasks stay in memory, lost on exit.
+FileStore implementation and ShellEngine integration will follow in a separate PR.
+
 ## State machine
 
 ```
