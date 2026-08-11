@@ -50,3 +50,4 @@ test_thread_log.txt
 # Test output
 Testing/
 CTestTestfile.cmake
+DEVGUIDE.md
