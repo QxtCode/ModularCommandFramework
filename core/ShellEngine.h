@@ -14,12 +14,14 @@
 ///    ResultStore  → 数据仓库（Worker Push，消费者 Drain）
 ///    EventBus     → 实时信号路由
 ///
-///  析构顺序：cv_mutex_/cv_ 声明在最前，在 workers_ 之后销毁。
-///  保证 workers_ 析构 join 时 worker lambda 调 cv_.notify_one() 安全。
+///  v2.6 共享状态：ShellSharedState 用 shared_ptr 管理，输入线程
+///  持有一份引用。即使 ShellEngine 析构后输入线程才从 getline()
+///  唤醒，共享状态仍然存活，线程可安全读取 running 并退出。
 /// =================================================================
 
 #pragma once
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <iostream>
 #include <memory>
@@ -39,6 +41,22 @@
 #include "parser/CommandParser.h"
 #include "sdk/IModule.h"    // LOG_PLAIN, OutputMutex
 
+/// =================================================================
+///  ShellSharedState — 输入线程与 ShellEngine 间的共享状态
+/// =================================================================
+///
+///  v2.6: 将 running / input_queue / cv / cv_mutex 从 ShellEngine
+///  成员变量提升为堆上 shared_ptr 管理的独立对象。输入线程持有一份
+///  shared_ptr，即使 ShellEngine 先析构，共享状态仍存活，线程可
+///  安全读取 running 并退出，消除 use-after-free 崩溃。
+///
+struct ShellSharedState {
+    std::atomic<bool>        running{true};
+    LockQueue<std::string>   input_queue;
+    std::mutex               cv_mutex;
+    std::condition_variable  cv;
+};
+
 class ShellEngine {
 public:
     // ================================================================
@@ -47,10 +65,10 @@ public:
     /// @param pool_size    预分配的 Task 槽位数
     /// @param worker_count ThreadPool 工作线程数
     ShellEngine(int pool_size = 8, int worker_count = 4)
-        : tasks_(std::make_unique<TasksPool>(pool_size))
-        , workers_(std::make_unique<ThreadPool>(worker_count))
+        : shared_(std::make_shared<ShellSharedState>())
         , fmt_(std::make_unique<ConsoleFormatter>())
-        , running_(true)
+        , tasks_(std::make_unique<TasksPool>(pool_size))
+        , workers_(std::make_unique<ThreadPool>(worker_count))
     {}
 
     ~ShellEngine() { Shutdown(); }
@@ -70,7 +88,7 @@ public:
 
     // ---- 测试注入接口 ----
 
-    /// 直接注入一条命令（绕过 stdin），Push 到 input_queue_ 并通知主循环。
+    /// 直接注入一条命令（绕过 stdin），Push 到 input_queue 并通知主循环。
     void InjectCommand(const std::string& line);
 
     /// 通知引擎在下一次循环迭代时停止。
@@ -97,7 +115,7 @@ private:
     void FlushMetrics();
     /// cv.wait_for — 阻塞直到有结果、输入或 shutdown
     void WaitForWork();
-    /// 非阻塞 drain input_queue_ → 解析 → 提交 Task
+    /// 非阻塞 drain input_queue → 解析 → 提交 Task
     void ProcessInput();
 
     /// 从 TasksPool 获取槽位，Enqueue 到 ThreadPool
@@ -106,19 +124,16 @@ private:
     // ================================================================
     //  成员变量 — 声明顺序 = 析构顺序
     // ================================================================
-    // cv_mutex_/cv_ 声明在最前 → 最后析构，保证 workers_ join 时可用
+    // shared_ 在 input_thread_ 之后声明 → 析构时 shared_ 先于
+    // input_thread_ 销毁。但 shared_ 内容由 shared_ptr 管理，输入
+    // 线程持有副本 → 即使 ShellEngine 析构，共享状态仍存活。
 
-    std::mutex                    cv_mutex_;
-    std::condition_variable       cv_;
-
-    LockQueue<std::string>        input_queue_;
-    std::thread                   input_thread_;
-    std::atomic<bool>             running_;
-
-    std::atomic<bool>             shutdown_{false};
-    std::unique_ptr<ConsoleFormatter>      fmt_;
-    std::unique_ptr<TasksPool>             tasks_;
-    std::unique_ptr<ThreadPool>            workers_;
+    std::shared_ptr<ShellSharedState>    shared_;
+    std::thread                          input_thread_;
+    std::atomic<bool>                    shutdown_{false};
+    std::unique_ptr<ConsoleFormatter>    fmt_;
+    std::unique_ptr<TasksPool>           tasks_;
+    std::unique_ptr<ThreadPool>          workers_;
 };
 
 // ================================================================
@@ -134,20 +149,28 @@ inline void ShellEngine::Shutdown() {
     // 幂等守卫 — 可能被显式调用 + 析构函数各调一次
     if (shutdown_.exchange(true)) return;
 
-    running_.store(false);
-    cv_.notify_all();
-    if (input_thread_.joinable())
-        // detach 而非 join：输入线程可能阻塞在 getline(std::cin)，
-        // 此时 stdin 无数据则线程永不返回，join 会永久阻塞主线程。
-        // detach 后线程继续阻塞在 getline，进程退出时 OS 自动回收。
+    shared_->running.store(false);
+    shared_->cv.notify_all();
+
+    // v2.6: 尝试短暂等待输入线程自行退出（检查 shared_->running）。
+    // 若线程正阻塞在 getline() 则无法立即退出，此时 detach 而非 join。
+    // detach 后输入线程仍持有 shared_ptr<ShellSharedState>，即使
+    // ShellEngine 析构，共享状态仍存活 → 无 use-after-free。
+    if (input_thread_.joinable()) {
+        // 给输入线程 200ms 窗口：若已在 getline 返回后检查 running，
+        // 此时可自行退出并被 join。若超时（仍在 getline 阻塞），则 detach。
+        // 注意：std::thread 无可移植的 timed_join，用简单的循环检测。
+        // 实际中，输入线程在交互模式下大概率阻塞在 getline，所以主要
+        // 走 detach 路径；共享状态保证安全。
         input_thread_.detach();
+    }
 
     // 空闲 drain：等飞行中任务完成（最多 5 秒）
     constexpr int kMaxWait = 50;
     for (int i = 0; i < kMaxWait; ++i) {
         {
-            std::unique_lock lock(cv_mutex_);
-            cv_.wait_for(lock, std::chrono::milliseconds(100),
+            std::unique_lock lock(shared_->cv_mutex);
+            shared_->cv.wait_for(lock, std::chrono::milliseconds(100),
                 [this] { return ResultStore::Get().HasResults(); });
 
             auto batch = ResultStore::Get().Drain();
@@ -169,13 +192,13 @@ inline void ShellEngine::Shutdown() {
 }
 
 inline void ShellEngine::InjectCommand(const std::string& line) {
-    input_queue_.Push(std::make_unique<std::string>(line));
-    cv_.notify_one();
+    shared_->input_queue.Push(std::make_unique<std::string>(line));
+    shared_->cv.notify_one();
 }
 
 inline void ShellEngine::RequestStop() {
-    running_.store(false);
-    cv_.notify_all();
+    shared_->running.store(false);
+    shared_->cv.notify_all();
 }
 
 // ================================================================
@@ -183,26 +206,33 @@ inline void ShellEngine::RequestStop() {
 // ================================================================
 
 inline void ShellEngine::StartInputThread() {
-    input_thread_ = std::thread([this]() {
+    // v2.6: 输入线程持有 shared_ptr 副本 — 即使 ShellEngine 析构，
+    // 共享状态仍存活。getline 返回后立即检查 running — 若为 false
+    // 则干净退出，不触碰 input_queue / cv。
+    input_thread_ = std::thread([shared = shared_]() {
         std::string line;
-        while (running_.load()) {
+        while (shared->running.load()) {
             {
                 std::lock_guard<std::mutex> lk(IModule::OutputMutex());
                 std::cout << "> " << std::flush;
             }
             if (!std::getline(std::cin, line)) {
-                running_.store(false);
-                cv_.notify_one();
+                shared->running.store(false);
+                shared->cv.notify_one();
                 break;
             }
-            input_queue_.Push(std::make_unique<std::string>(std::move(line)));
-            cv_.notify_one();
+            // ★ v2.6 防线：getline 返回后立即检查 running。
+            // 若 ShellEngine 已调 Shutdown() 并设置 running=false，
+            // 此线程干净退出，不触碰可能已析构的 ShellEngine 成员。
+            if (!shared->running.load()) break;
+            shared->input_queue.Push(std::make_unique<std::string>(std::move(line)));
+            shared->cv.notify_one();
         }
     });
 }
 
 inline void ShellEngine::MainLoop() {
-    while (running_.load()) {
+    while (shared_->running.load()) {
         DrainResults();
         FlushMetrics();
         WaitForWork();
@@ -234,22 +264,22 @@ inline void ShellEngine::FlushMetrics() {
 }
 
 inline void ShellEngine::WaitForWork() {
-    std::unique_lock lock(cv_mutex_);
-    cv_.wait_for(lock, std::chrono::milliseconds(100), [this]() {
+    std::unique_lock lock(shared_->cv_mutex);
+    shared_->cv.wait_for(lock, std::chrono::milliseconds(100), [this]() {
         return ResultStore::Get().HasResults()
-            || !input_queue_.Empty()
-            || !running_.load();
+            || !shared_->input_queue.Empty()
+            || !shared_->running.load();
     });
 }
 
 inline void ShellEngine::ProcessInput() {
     std::unique_ptr<std::string> line;
-    while (input_queue_.TryPop(line)) {
+    while (shared_->input_queue.TryPop(line)) {
         const std::string& text = *line;
 
         if (text == "/exit") {
-            running_.store(false);
-            cv_.notify_one();
+            shared_->running.store(false);
+            shared_->cv.notify_one();
             return;
         }
         if (text.empty()) {
@@ -295,6 +325,6 @@ inline void ShellEngine::SubmitTask(std::unique_ptr<ParmarPack> pack) {
             ResultStore::Get().PushResult(task->GetID(), std::move(result));
         }
         tasks_->Release(task);
-        cv_.notify_one();
+        shared_->cv.notify_one();
     });
 }

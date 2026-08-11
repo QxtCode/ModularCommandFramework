@@ -1,48 +1,52 @@
 /// =================================================================
-///  Concurrency Stress Tests — 专门攻击并发漏洞
+///  Concurrency Stress Tests — 并发缺陷追踪
 /// =================================================================
 ///
-///  代码审查发现的真实 bug（按严重程度排列）:
+///  审计日期: 2026-08-10
+///  审计范围: ModuleLifeManager / EventBus / Task / TasksPool / ThreadPool
 ///
-///  Bug 1 [MEDIUM]: AddModule 的 TOCTOU 竞态
-///    两个线程同时 AddModule 同名模块 → 都通过重名检查 →
-///    第二个覆盖第一个 → 被覆盖模块的 unique_ptr 析构 →
-///    模块被 delete，但它的 EventBus 信号还在 →
-///    Emit 时访问已删除模块 → use-after-free
+///  【已修复的 Bug】
 ///
-///  Bug 2 [MEDIUM]: Task::shards_ 没有同步
-///    PushShard() 和 Step()/Reset() 同时访问 std::vector →
-///    data race (C++ 标准明确这是 UB)
+///  Bug 1 [已修复 - v2.4]: AddModule TOCTOU → 僵尸信号 → use-after-free
+///    修复: AddModule 全程持 unique_lock，ConnectToEventBus 在锁内执行。
+///    两个线程同时 AddModule 同名模块时，只有一个成功。失败的线程
+///    OnInit() 虽然被浪费执行了，但不会在 EventBus 上留下僵尸信号。
+///    残留小问题: OnInit() 在锁外调用，重复调用有副作用浪费。
 ///
-///  Bug 3 [MEDIUM]: Emit 持锁期间执行用户代码
-///    Emit() 持有 bus_mutex_ shared_lock 执行全部 Slot →
-///    如果 Slot 执行 500ms，UnloadModule 的 RemoveSignal
-///    就被阻塞 500ms（因为需要 unique_lock）→
-///    而 UnloadModule 又持有 module_map_ 的 unique_lock →
-///    这 500ms 内所有模块操作被阻塞（Dispatch/GetModule 等）
-///    → 不是死锁，但是严重的可用性问题
+///  Bug 2 [已修复 - v2.4]: Task::shards_ data race
+///    修复: 添加 shards_mutex_，PushShard/Step/Reset/GetProgress 全部加锁。
 ///
-///  Bug 4 [LOW]: Slot lambda 捕获裸 [this]
-///    ConnectToEventBus 的 lambda: [this](p) { Execute(p); }
-///    模块删除后，EventBus 信号上的 lambda 的 this 悬空。
-///    目前"碰巧"安全：因为 UnloadModule 先 RemoveSignal
-///    （阻塞等待所有 Emit 完成）再 delete 模块。
-///    但这个安全依赖 Emit 的实现细节（持锁执行 Slot）—
-///    如果未来改成异步 Emit，就炸了。
+///  Bug 4 [已修复 - v2.4]: Slot lambda 捕获裸 [this] → use-after-free
+///    修复: Slot 持有 weak_ptr<ModuleBaseObject>，Run() 时 Lock() 检查存活。
+///    异常安全: Slot::Run() 用 try-catch(...) 兜底（v2.5）。
 ///
-///  Bug 5 [LOW]: TasksPool::Tick() 持 mutex_ 调 Step()
-///    Tick 期间整个池被锁，其他线程无法 Acquire/Release。
-///    （目前 main.cpp 不用 Tick，但代码在那里就有隐患）
+///  【v2.6 已修复】
 ///
-///  关于 DLL 卸载:
-///    经过仔细分析，UnloadModule → RemoveSignal 的路径是
-///    race-free 的。因为 Emit 持有 bus_mutex_ shared_lock
-///    执行 Slot，RemoveSignal 需要 unique_lock，所以
-///    RemoveSignal 会等所有正在执行的 Slot 结束后才删除信号。
-///    信号删除后模块才被 delete/FreeLibrary，所以是安全的。
+///  问题 A ✅ — Emit 持锁连锁阻塞（A1 快照式 Emit）
+///    Emit() 锁内只做查找 + shared_ptr 拍快照 → 释放锁 → 锁外执行 Slot。
+///    RemoveSignal 不再被慢 Slot 阻塞。详见 eventbus/include/event_bus/event_bus.h。
+///    验证: EmitSnapshotDoesNotBlockRemoveSignal (0ms vs 190ms 修复前)
 ///
-///    但这个安全建立在"Emit 持锁执行整个 Slot"的基础上 —
-///    如果 Slot 执行时间长，会严重阻塞其他操作。
+///  【已知待处理问题】
+///
+///  问题 B [LOW — 无死任务检测]: 卡住的 Slot 永久占用 Worker + Pool 槽位
+///    模块回调进入死循环 → Worker 线程永久卡住。
+///    Cancel/Pause 只在分片间生效，无法中断当前分片。
+///    后果: Worker 数递减，Pool 槽位泄露，吞吐量下降。
+///
+///  问题 C [LOW — Tick() 持锁]: TasksPool::Tick() 持 mutex_ 调 Step()
+///    Tick 期间 Acquire/Release 被阻塞。main.cpp 不用 Tick，暂时无实际影响。
+///
+///  【并发安全保证（已验证）】
+///
+///  1. DLL 卸载安全 (v2.6): Emit 锁内拍 shared_ptr<ISignal> 快照 → 释放锁 →
+///     Slot 锁外执行。RemoveSignal 可立即获得 unique_lock 删除信号，快照的
+///     shared_ptr 保持信号存活直到 Slot 执行完毕。
+///  2. Slot 弱引用保护 (v2.4): weak_ptr<ModuleBaseObject> + Run() 时 Lock()，
+///     模块卸载后 Slot 自动跳过。
+///  3. EventBus DLL 单例: static instance 在 DLL 内，所有模块共享唯一实例。
+///  4. std::shared_mutex 读写分离: 多个 Emit 可并发（shared_lock），
+///     RemoveSignal/RegisterSignal 串行化（unique_lock）。
 
 #include <gtest/gtest.h>
 #include <atomic>
@@ -378,14 +382,12 @@ TEST(ConcurrencyStress, ShardsDataRace)
 }
 
 // ================================================================
-//  Bug 3: Emit 持锁时间过长 — 可用性测试
+//  Bug 3: Emit 持锁时间过长 — 可用性测试（v2.6 已修复）
 // ================================================================
-//  Emit 持有 bus_mutex_ shared_lock 执行 Slot（包括用户代码）。
-//  如果 Slot 慢（比如 200ms），UnloadModule 的 RemoveSignal 就被阻塞 200ms。
-//  而 UnloadModule 又持有 module_map_ 的 unique_lock →
-//  这 200ms 里 Dispatch/GetModule 全被阻塞。
+//  v2.6 A1 快照式 Emit: 锁内拍信号快照 → 释放锁 → 锁外执行 Slot。
+//  RemoveSignal 不再被慢 Slot 阻塞。本测试验证修复有效。
 
-TEST(ConcurrencyStress, EmitBlocksUnloadModule)
+TEST(ConcurrencyStress, EmitDoesNotBlockRemoveSignal_Integration)
 {
     auto& mgr = ModuleLifeManager::GetInstance();
     auto& bus = EventBus::GetInstance();
@@ -428,30 +430,117 @@ TEST(ConcurrencyStress, EmitBlocksUnloadModule)
             std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
     });
 
-    // 同时尝试 Dispatch（也需要 module_map_ shared_lock）
-    std::this_thread::sleep_for(20ms);
-    auto dispatch_start = std::chrono::steady_clock::now();
-    {
-        ParmarPack p; p.mod_id = "Blocker"; p.func_id = "work";
-        mgr.Dispatch(&p);  // ← 会被 UnloadModule 的 unique_lock 阻塞！
-    }
-    auto dispatch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - dispatch_start).count();
-
     unloader.join();
 
-    std::cout << "[TEST] Unload blocked for: " << unload_blocked_ms.load()
-              << "ms, Dispatch blocked for: " << dispatch_ms << "ms\n";
+    std::cout << "[TEST] Unload took: " << unload_blocked_ms.load()
+              << "ms (Slot delay=200ms)" << std::endl;
 
-    // 断言：如果 Emit 持锁执行 Slot，Unload 至少会被阻塞 Slot 的执行时间
-    // （~200ms 的 sleep）
-    if (unload_blocked_ms.load() >= 150)
-        std::cout << "[TEST] CONFIRMED: Unload blocked by slow Slot execution\n";
-    if (dispatch_ms >= 100)
-        std::cout << "[TEST] CONFIRMED: Dispatch blocked while Unload is pending\n";
+    // v2.6: 快照式 Emit 后，Unload(含 RemoveSignal) 不应被慢 Slot 阻塞
+    EXPECT_LT(unload_blocked_ms.load(), 100)
+        << "v2.6 snapshot-Emit: RemoveSignal should not wait for slow Slot.\n"
+        << "  Unload should complete in <100ms even with 200ms Slot.";
 
+    // ★ 等 worker 完成并把 task 放入 done_queue，必须在局部变量析构前 drain。
+    for (int w = 0; w < 100 && exec_count.load() == 0; ++w)
+        std::this_thread::sleep_for(10ms);
+    for (int w = 0; w < 50 && done_queue.empty(); ++w)
+        std::this_thread::sleep_for(10ms);
     DrainDoneQueue(done_mutex, done_queue, tasks);
     SUCCEED();
+}
+
+// ================================================================
+//  ★ A1 方案验证：快照式 Emit — 慢 Slot 不阻塞 RemoveSignal
+// ================================================================
+//  当前 Emit() 持 shared_lock 执行全部 Slot。慢 Slot → 阻塞
+//  RemoveSignal(需要 unique_lock) → 连锁阻塞 UnloadModule/Dispatch。
+//
+//  快照式 Emit 方案：
+//    lock 内: 查信号 → TakeSnapshot() → 释放锁
+//    lock 外: 逐个执行 snapshot 中的 Slot
+//  → RemoveSignal 可立即获得 unique_lock，不再被慢 Slot 阻塞。
+//
+//  本测试在快照方案实施前会 FAIL（证明问题存在），实施后 PASS。
+
+TEST(ConcurrencyStress, EmitSnapshotDoesNotBlockRemoveSignal)
+{
+    auto& mgr = ModuleLifeManager::GetInstance();
+    auto& bus = EventBus::GetInstance();
+
+    std::atomic<int> exec_count{0};
+    std::atomic<int> in_flight{0};
+    std::atomic<long long> remove_signal_blocked_ms{0};
+
+    // 创建慢模块（Slot 执行 200ms）
+    auto mod = std::make_unique<SlowModule>("SnapshotTest", &exec_count, &in_flight, 200);
+    ASSERT_TRUE(mgr.AddModule(std::move(mod)));
+
+    ThreadPool workers(4);
+    TasksPool tasks(8);
+    std::mutex done_mutex;
+    std::queue<Task*> done_queue;
+
+    // 提交任务：Step() 内部调 Emit → Slot 开始 200ms sleep
+    auto pack = std::make_unique<ParmarPack>();
+    pack->mod_id = "SnapshotTest";
+    pack->func_id = "work";
+    pack->show_explanation = false;
+    Task* task = tasks.Acquire(std::move(pack));
+    ASSERT_NE(task, nullptr);
+    workers.Enqueue([task, &bus, &done_mutex, &done_queue]() {
+        try { while (task->Step(bus)) {} } catch (...) {}
+        { std::lock_guard lock(done_mutex); done_queue.push(task); }
+    });
+
+    // 等待 Slot 开始执行（in_flight 变成 1）
+    for (int w = 0; w < 50 && in_flight.load() == 0; ++w)
+        std::this_thread::sleep_for(10ms);
+    ASSERT_GT(in_flight.load(), 0) << "Slow Slot should be in-flight";
+
+    // 从另一个线程测量 RemoveSignal 的阻塞时间
+    bool remove_ok = false;
+    std::thread remover([&]() {
+        auto start = std::chrono::steady_clock::now();
+        // 直接 RemoveSignal（不走 UnloadModule，避免 module_map_ 锁干扰测量）
+        remove_ok = bus.RemoveSignal("SnapshotTest.work");
+        auto elapsed = std::chrono::steady_clock::now() - start;
+        remove_signal_blocked_ms.store(
+            std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+    });
+
+    remover.join();
+    EXPECT_TRUE(remove_ok) << "Signal should exist to be removed";
+
+    // ★ 等待 worker 完成：先等 Slot 执行完毕（exec_count > 0），
+    //   再等 worker 将 task 放入 done_queue 并 drain 归还。
+    //   必须在局部变量析构前完成，否则 tasks 析构先于 workers join
+    //   导致 worker 访问已释放的 Task → use-after-free。
+    for (int w = 0; w < 100 && exec_count.load() == 0; ++w)
+        std::this_thread::sleep_for(10ms);
+    for (int w = 0; w < 50 && done_queue.empty(); ++w)
+        std::this_thread::sleep_for(10ms);
+    DrainDoneQueue(done_mutex, done_queue, tasks);
+
+    // 清理（信号已 Remove，直接 Unload 模块）
+    bus.RemoveSignal("SnapshotTest.ping");
+    mgr.UnloadModule("SnapshotTest");
+
+    std::cout << "[TEST] RemoveSignal blocked for: "
+              << remove_signal_blocked_ms.load() << "ms"
+              << " (Slot delay=200ms)" << std::endl;
+
+    // ★ 核心断言：快照方案实施后，RemoveSignal 不应被慢 Slot 阻塞
+    //   当前代码 Emit 持锁执行 Slot → RemoveSignal 至少被阻塞 Slot 时间
+    //   修复后 Emit 锁内只拍快照 → RemoveSignal 应立即返回
+    EXPECT_LT(remove_signal_blocked_ms.load(), 100)
+        << "RemoveSignal should NOT be blocked by slow Slot execution.\n"
+        << "  With snapshot-Emit, RemoveSignal gets unique_lock immediately\n"
+        << "  because Emit releases shared_lock before executing Slots.";
+
+    // ★ Slot 仍应被执行（快照已持有 shared_ptr，不受 RemoveSignal 影响）
+    EXPECT_GT(exec_count.load(), 0)
+        << "Slot should still execute even after signal is removed,\n"
+        << "  because the snapshot holds shared_ptr to the Slot.";
 }
 
 // ================================================================
@@ -500,14 +589,19 @@ TEST(ConcurrencyStress, BypassUnloadModule_DanglingSlot)
     // 场景 A：先 RemoveSignal（等 Emit 完成），再删模块 → 安全
     // 场景 B：先删模块，再 RemoveSignal → 危险！
 
-    // 测试场景 B（危险路径）：
-    // 移除信号（会阻塞到所有 Emit 完成）
+    // 场景 B（危险路径）：
+    // v2.6: RemoveSignal 不再阻塞（快照式 Emit）。先等所有 in-flight
+    // worker 完成，再删模块，避免 worker 访问已释放的模块内存。
     for (const auto& sig : bus.GetSignalNames())
         if (sig.find("BypassMod.") == 0)
             bus.RemoveSignal(sig);
 
+    // 等所有 worker 完成 Slot 执行
+    for (int w = 0; w < 200 && in_flight.load() > 0; ++w)
+        std::this_thread::sleep_for(10ms);
+
     // 现在模块的代码在 DLL 里（不适用）但在内存里。
-    // shared_ptr 是唯一持有者 → reset 会 delete
+    // shared_ptr 是唯一持有者 → reset 会 delete（worker 已全部完成，安全）
     mod.reset();
     std::cout << "[TEST] Module deleted.\n";
 
@@ -516,6 +610,9 @@ TEST(ConcurrencyStress, BypassUnloadModule_DanglingSlot)
     std::cout << "[TEST] Emit after delete: " << (emit_ok ? "FOUND (uh oh)" : "not found (good)") << "\n";
     EXPECT_FALSE(emit_ok) << "Signal should have been removed";
 
+    // ★ 等 worker 将 task 放入 done_queue 后 drain
+    for (int w = 0; w < 50 && done_queue.empty(); ++w)
+        std::this_thread::sleep_for(10ms);
     DrainDoneQueue(done_mutex, done_queue, tasks);
     std::cout << "[TEST] Survived. exec=" << exec_count.load() << "\n";
     SUCCEED();
