@@ -41,6 +41,8 @@
 #include "core/ShellEngine.h"
 #include "modules/PrintModule.h"
 #include "modules/logging/LogModule.h"
+#include "modules/TaskManagerModule.h"
+#include "core/MemTaskStore.h"
 #include "event_bus/event_bus.h"
 #include "sdk/IModule.h"
 
@@ -86,6 +88,11 @@ int main(int argc, char* argv[])
     //  Engine — event-driven main loop, configured from cfg
     // ================================================================
     ShellEngine engine(cfg.pool_size, cfg.workers);
+
+    // v2.6: TaskManager — pause/resume/list（进程内有效）
+    auto taskStore = std::make_shared<MemPersistence>();
+    mgr.AddModule(std::make_unique<TaskManagerModule>(
+        engine.GetPool(), engine.GetWorkers(), taskStore.get()));
 
     cout << endl
          << "  -m:ModuleName -f:FuncID -v:key|val,..." << endl

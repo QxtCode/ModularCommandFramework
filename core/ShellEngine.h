@@ -103,6 +103,10 @@ public:
     size_t TotalTasks()     const { return tasks_->GetTotalCount(); }
     /// @}
 
+    /// v2.6: 暴露内部组件引用，供 TaskManager 等扩展模块使用。
+    TasksPool&  GetPool()    { return *tasks_; }
+    ThreadPool& GetWorkers() { return *workers_; }
+
 private:
     // ================================================================
     //  四步流水线
