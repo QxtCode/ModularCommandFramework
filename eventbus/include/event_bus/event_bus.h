@@ -27,8 +27,17 @@
 extern "C" EVENTBUS_API void* GetEventBusPtr();
 
 // =================================================================
-//  EventBus — type-safe signal-slot dispatcher
+//  EventBus — type-safe signal-slot dispatcher (v2.6 snapshot Emit)
 // =================================================================
+///
+///  v2.4: shared_lock during execution prevents RemoveSignal from
+///        deleting the signal while slots are running.
+///  v2.6: A1 snapshot Emit — lock held only for signal lookup +
+///        shared_ptr snapshot; Slots execute outside the lock, so
+///        RemoveSignal/UnloadModule are no longer blocked by slow Slots.
+///        signals_ uses shared_ptr to keep the signal alive even after
+///        RemoveSignal erases it from the map.
+///
 class EventBus
 {
 public:
@@ -38,11 +47,13 @@ public:
     }
 
     // ---- Register signal ----
+    /// v2.6: signals_ stores shared_ptr (was unique_ptr) so Emit can
+    /// hold a snapshot copy while executing Slots outside the lock.
     std::string RegisterSignal(const std::string& name, std::unique_ptr<ISignal> signal)
     {
         if (name.empty() || !signal) return {};
         std::unique_lock lock(bus_mutex_);
-        signals_[name] = std::move(signal);
+        signals_[name] = std::shared_ptr<ISignal>(std::move(signal));
         return name;
     }
 
@@ -52,7 +63,7 @@ public:
         if (name.empty()) return {};
         auto signal = std::make_unique<Signal<Args...>>();
         std::unique_lock lock(bus_mutex_);
-        signals_[name] = std::move(signal);
+        signals_[name] = std::shared_ptr<ISignal>(std::move(signal));
         return name;
     }
 
@@ -66,6 +77,8 @@ public:
         return true;
     }
 
+    /// v2.6: 快照式 Emit 释放 shared_lock 后才执行 Slot，RemoveSignal
+    /// 不再被慢 Slot 阻塞 — unique_lock 立即可获得。
     bool RemoveSignal(const std::string& name)
     {
         std::unique_lock lock(bus_mutex_);
@@ -141,22 +154,31 @@ public:
     }
 
     // ---- Emit (the core method) ----
-    /// v2.4: Holds bus_mutex_ shared_lock during slot execution.
-    /// This prevents RemoveSignal (needs unique_lock) from deleting
-    /// the signal while slots are running — guaranteeing module
-    /// lifetime safety during DLL unload.
+    /// v2.6 A1 快照式 Emit：锁内拍 shared_ptr<ISignal> 快照 → 释放锁
+    /// → 锁外执行 TraverseSlots。RemoveSignal 不再被慢 Slot 阻塞。
+    /// 信号由 shared_ptr 保护：即使 RemoveSignal 在 Emit 期间删除了
+    /// map 中的条目，快照持有的 shared_ptr 仍保持信号对象存活。
     template <class... Args>
     bool Emit(const std::string& signal_name, Args&&... args)
     {
-        std::shared_lock lock(bus_mutex_);
-        auto it = signals_.find(signal_name);
-        if (it == signals_.end()) return false;
-
         using SignalType = Signal<std::decay_t<Args>...>;
-        auto* typed = dynamic_cast<SignalType*>(it->second.get());
-        if (!typed) return false;
-        if (!typed->IsEnabled()) return false;
 
+        // ★ v2.6: 锁内只拍快照，不执行 Slot
+        std::shared_ptr<ISignal> signal_snapshot;
+        SignalType* typed = nullptr;
+        {
+            std::shared_lock lock(bus_mutex_);
+            auto it = signals_.find(signal_name);
+            if (it == signals_.end()) return false;
+
+            typed = dynamic_cast<SignalType*>(it->second.get());
+            if (!typed) return false;
+            if (!typed->IsEnabled()) return false;
+
+            signal_snapshot = it->second;  // shared_ptr copy → ref count++
+        }  // ★ 释放 shared_lock — RemoveSignal 可立即获得 unique_lock
+
+        // ★ 锁外执行 Slot — 不再阻塞 RemoveSignal/UnloadModule/Dispatch
         typed->TraverseSlots(std::forward<Args>(args)...);
         return true;
     }
@@ -170,6 +192,8 @@ public:
     EventBus() = default;
 
 private:
-    std::unordered_map<std::string, std::unique_ptr<ISignal>> signals_;
+    /// v2.6: shared_ptr (was unique_ptr) — 使 Emit 可拍下信号快照，
+    /// 即使 RemoveSignal 并发地删除 map 条目，快照仍保持信号存活。
+    std::unordered_map<std::string, std::shared_ptr<ISignal>> signals_;
     mutable std::shared_mutex bus_mutex_;
 };

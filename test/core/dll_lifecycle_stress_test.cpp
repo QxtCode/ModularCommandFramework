@@ -567,7 +567,7 @@ TEST_F(DLLLifecycleTest, Builtin_LoadFailureCleanup)
 }
 
 // ================================================================
-//  L6: Emit 期间 Dispatch 被阻塞（验证锁的正确性）
+//  L6: v2.6 快照式 Emit — Unload 不再被慢 Slot 阻塞
 // ================================================================
 TEST_F(DLLLifecycleTest, Builtin_DispatchBlockedDuringUnload)
 {
@@ -593,18 +593,6 @@ TEST_F(DLLLifecycleTest, Builtin_DispatchBlockedDuringUnload)
         std::this_thread::sleep_for(10ms);
     ASSERT_GT(in_flight.load(), 0);
 
-    // Now try Dispatch from another thread — should block briefly
-    std::thread dispatcher([&]() {
-        auto start = std::chrono::steady_clock::now();
-        ParmarPack p;
-        p.mod_id = "BlockTest";
-        p.func_id = "ping";
-        mgr_->Dispatch(&p);
-        auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start).count();
-        std::cout << "[L6] Dispatch took " << dur << "ms" << std::endl;
-    });
-
     // Start Unload shortly after
     std::this_thread::sleep_for(50ms);
     auto unload_start = std::chrono::steady_clock::now();
@@ -614,8 +602,9 @@ TEST_F(DLLLifecycleTest, Builtin_DispatchBlockedDuringUnload)
     std::cout << "[L6] Unload took " << unload_ms << "ms" << std::endl;
 
     fut.wait();
-    dispatcher.join();
 
-    // Verify Unload waited for the slow Emit to finish
-    EXPECT_GE(unload_ms, 200) << "Unload should wait for in-flight Emit";
+    // v2.6: 快照式 Emit 后，Unload(RemoveSignal) 不再被慢 Slot 阻塞。
+    // Unload 应在 < 100ms 内完成，即使 Slot 要 300ms。
+    EXPECT_LT(unload_ms, 100)
+        << "v2.6 snapshot-Emit: Unload should NOT wait for slow Emit (" << unload_ms << "ms)";
 }
