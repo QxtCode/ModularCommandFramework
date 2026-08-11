@@ -285,6 +285,8 @@ inline void ShellEngine::ProcessInput() {
             return;
         }
         if (text.empty()) {
+            // 提示符 "> " 不带换行，空命令的输出需先换行避免粘连
+            std::cout << std::endl;
             ModuleLifeManager::GetInstance().PrintModuleList();
             continue;
         }
