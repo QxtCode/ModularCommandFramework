@@ -55,6 +55,8 @@ struct ShellSharedState {
     LockQueue<std::string>   input_queue;
     std::mutex               cv_mutex;
     std::condition_variable  cv;
+    // v2.6: 提示符门控 — 输入线程仅在主循环处理完上一轮输入后才打印 "> "
+    std::atomic<bool>        prompt_ready{true};
 };
 
 class ShellEngine {
@@ -206,20 +208,27 @@ inline void ShellEngine::RequestStop() {
 // ================================================================
 
 inline void ShellEngine::StartInputThread() {
-    // v2.6: 输入线程只负责读取 stdin 并 Push 到队列。提示符 "> "
-    // 由主循环在 WaitForWork 前打印，避免与 ProcessInput 输出交错。
-    // 输入线程持有 shared_ptr 副本，即使 ShellEngine 析构后线程才
-    // 从 getline 唤醒，共享状态仍存活。
+    // v2.6: 输入线程打印 "> " 提示符后阻塞在 getline。主循环处理完输入
+    // 后设置 prompt_ready=true，输入线程才打印下一个提示符，消除输出交错。
     input_thread_ = std::thread([shared = shared_]() {
         std::string line;
         while (shared->running.load()) {
+            // 等待主循环处理完上一轮输入
+            while (shared->running.load() && !shared->prompt_ready.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            if (!shared->running.load()) break;
+
+            {
+                std::lock_guard<std::mutex> lk(IModule::OutputMutex());
+                std::cout << "> " << std::flush;
+            }
             if (!std::getline(std::cin, line)) {
                 shared->running.store(false);
                 shared->cv.notify_one();
                 break;
             }
-            // ★ v2.6 防线：getline 返回后立即检查 running。
             if (!shared->running.load()) break;
+            shared->prompt_ready.store(false);  // 门控：等主循环处理完
             shared->input_queue.Push(std::make_unique<std::string>(std::move(line)));
             shared->cv.notify_one();
         }
@@ -230,13 +239,6 @@ inline void ShellEngine::MainLoop() {
     while (shared_->running.load()) {
         DrainResults();
         FlushMetrics();
-        // ★ v2.6: 提示符由主循环打印，仅当输入队列为空时 —
-        // 表示所有待处理输入已消费完毕，系统真正在等新输入。
-        // 保证 "> " 出现在上一轮输出之后，不与结果输出交错。
-        if (shared_->input_queue.Empty()) {
-            std::lock_guard<std::mutex> lk(IModule::OutputMutex());
-            std::cout << "> " << std::flush;
-        }
         WaitForWork();
         ProcessInput();
     }
@@ -302,6 +304,8 @@ inline void ShellEngine::ProcessInput() {
 
         SubmitTask(std::move(pack));
     }
+    // ★ v2.6: 输入队列已清空，通知输入线程可打印下一个 "> " 提示符
+    shared_->prompt_ready.store(true);
 }
 
 inline void ShellEngine::SubmitTask(std::unique_ptr<ParmarPack> pack) {
