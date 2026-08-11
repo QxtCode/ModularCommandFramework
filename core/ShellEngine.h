@@ -206,24 +206,19 @@ inline void ShellEngine::RequestStop() {
 // ================================================================
 
 inline void ShellEngine::StartInputThread() {
-    // v2.6: 输入线程持有 shared_ptr 副本 — 即使 ShellEngine 析构，
-    // 共享状态仍存活。getline 返回后立即检查 running — 若为 false
-    // 则干净退出，不触碰 input_queue / cv。
+    // v2.6: 输入线程只负责读取 stdin 并 Push 到队列。提示符 "> "
+    // 由主循环在 WaitForWork 前打印，避免与 ProcessInput 输出交错。
+    // 输入线程持有 shared_ptr 副本，即使 ShellEngine 析构后线程才
+    // 从 getline 唤醒，共享状态仍存活。
     input_thread_ = std::thread([shared = shared_]() {
         std::string line;
         while (shared->running.load()) {
-            {
-                std::lock_guard<std::mutex> lk(IModule::OutputMutex());
-                std::cout << "> " << std::flush;
-            }
             if (!std::getline(std::cin, line)) {
                 shared->running.store(false);
                 shared->cv.notify_one();
                 break;
             }
             // ★ v2.6 防线：getline 返回后立即检查 running。
-            // 若 ShellEngine 已调 Shutdown() 并设置 running=false，
-            // 此线程干净退出，不触碰可能已析构的 ShellEngine 成员。
             if (!shared->running.load()) break;
             shared->input_queue.Push(std::make_unique<std::string>(std::move(line)));
             shared->cv.notify_one();
@@ -235,6 +230,13 @@ inline void ShellEngine::MainLoop() {
     while (shared_->running.load()) {
         DrainResults();
         FlushMetrics();
+        // ★ v2.6: 提示符由主循环打印，仅当输入队列为空时 —
+        // 表示所有待处理输入已消费完毕，系统真正在等新输入。
+        // 保证 "> " 出现在上一轮输出之后，不与结果输出交错。
+        if (shared_->input_queue.Empty()) {
+            std::lock_guard<std::mutex> lk(IModule::OutputMutex());
+            std::cout << "> " << std::flush;
+        }
         WaitForWork();
         ProcessInput();
     }
