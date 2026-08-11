@@ -55,6 +55,8 @@ struct ShellSharedState {
     LockQueue<std::string>   input_queue;
     std::mutex               cv_mutex;
     std::condition_variable  cv;
+    // v2.6: 提示符门控 — 输入线程仅在主循环处理完上一轮输入后才打印 "> "
+    std::atomic<bool>        prompt_ready{true};
 };
 
 class ShellEngine {
@@ -206,12 +208,16 @@ inline void ShellEngine::RequestStop() {
 // ================================================================
 
 inline void ShellEngine::StartInputThread() {
-    // v2.6: 输入线程持有 shared_ptr 副本 — 即使 ShellEngine 析构，
-    // 共享状态仍存活。getline 返回后立即检查 running — 若为 false
-    // 则干净退出，不触碰 input_queue / cv。
+    // v2.6: 输入线程打印 "> " 提示符后阻塞在 getline。主循环处理完输入
+    // 后设置 prompt_ready=true，输入线程才打印下一个提示符，消除输出交错。
     input_thread_ = std::thread([shared = shared_]() {
         std::string line;
         while (shared->running.load()) {
+            // 等待主循环处理完上一轮输入
+            while (shared->running.load() && !shared->prompt_ready.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            if (!shared->running.load()) break;
+
             {
                 std::lock_guard<std::mutex> lk(IModule::OutputMutex());
                 std::cout << "> " << std::flush;
@@ -221,10 +227,8 @@ inline void ShellEngine::StartInputThread() {
                 shared->cv.notify_one();
                 break;
             }
-            // ★ v2.6 防线：getline 返回后立即检查 running。
-            // 若 ShellEngine 已调 Shutdown() 并设置 running=false，
-            // 此线程干净退出，不触碰可能已析构的 ShellEngine 成员。
             if (!shared->running.load()) break;
+            shared->prompt_ready.store(false);  // 门控：等主循环处理完
             shared->input_queue.Push(std::make_unique<std::string>(std::move(line)));
             shared->cv.notify_one();
         }
@@ -283,6 +287,8 @@ inline void ShellEngine::ProcessInput() {
             return;
         }
         if (text.empty()) {
+            // 提示符 "> " 不带换行，空命令的输出需先换行避免粘连
+            std::cout << std::endl;
             ModuleLifeManager::GetInstance().PrintModuleList();
             continue;
         }
@@ -298,6 +304,8 @@ inline void ShellEngine::ProcessInput() {
 
         SubmitTask(std::move(pack));
     }
+    // ★ v2.6: 输入队列已清空，通知输入线程可打印下一个 "> " 提示符
+    shared_->prompt_ready.store(true);
 }
 
 inline void ShellEngine::SubmitTask(std::unique_ptr<ParmarPack> pack) {
