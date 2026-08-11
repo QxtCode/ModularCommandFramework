@@ -62,6 +62,7 @@ add_executable(test_runner
     core/result_store_test.cpp
     core/shell_engine_test.cpp
     core/peak_stress_test.cpp
+    core/task_store_test.cpp
     sdk/imodule_test.cpp
     core/platform_file_system_test.cpp
     core/platform_shared_library_test.cpp
