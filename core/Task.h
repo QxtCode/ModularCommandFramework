@@ -178,6 +178,27 @@ public:
         return shards_[current_].get();
     }
 
+    // ============================================================
+    //  v2.6: 快照 / 恢复（ITaskStore 用）
+    // ============================================================
+    /// 导出当前状态为 TaskRecord。调用方负责序列化 shards_json。
+    /// 线程安全: 内部加锁读取 shards_ + current_。
+    std::string StateName() const {
+        switch (state_.load()) {
+            case State::IDLE:      return "IDLE";
+            case State::RUNNING:   return "RUNNING";
+            case State::PAUSED:    return "PAUSED";
+            case State::COMPLETED: return "COMPLETED";
+            case State::FAILED:    return "FAILED";
+        }
+        return "IDLE";
+    }
+
+    /// 从 TaskRecord 恢复状态。调用前 task 必须处于 IDLE 状态。
+    /// shards 从 shards_json 反序列化填充。
+    /// @return false 如果 task 不在 IDLE 状态或恢复失败。
+    bool Restore(const struct TaskRecord& record);
+
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;
 

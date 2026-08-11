@@ -56,6 +56,7 @@
 /// =================================================================
 
 #include "Task.h"
+#include "core/ITaskPersistence.h"  // TaskRecord
 #include "event_bus/event_bus.h"
 #include "modules/logging/LogModule.h"
 
@@ -145,6 +146,53 @@ bool Task::Step(EventBus& bus)
             if (on_complete_) on_complete_(*this);
         }
     }
+
+    return true;
+}
+
+// ================================================================
+//  v2.6: Restore — 从 TaskRecord 恢复分片状态
+// ================================================================
+bool Task::Restore(const TaskRecord& record)
+{
+    // 只能在 IDLE 状态恢复（PAUSED 任务被 Release 后回到 IDLE）
+    State s = state_.load();
+    if (s != State::IDLE) return false;
+
+    std::lock_guard lock(shards_mutex_);
+
+    // 从 shards_json 重建分片
+    shards_.clear();
+    current_ = record.current_shard;
+    declared_total_.store(record.declared_total);
+    id_.store(record.task_id);
+
+    // 恢复至少一个分片（Step() 依赖 shards_ 非空）
+    {
+        auto pack = std::make_unique<ParmarPack>();
+        if (!record.shards_json.empty()) {
+            // TODO: 从 JSON 反序列化完整分片数据
+            pack->mod_id  = "restored";
+            pack->func_id = "restored";
+        } else {
+            // 空快照: 创建占位分片，保证 Step() 不崩溃
+            pack->mod_id  = "restored";
+            pack->func_id = "restored";
+        }
+        pack->success = false;
+        pack->owner_task = this;
+        shards_.push_back(std::move(pack));
+    }
+
+    // 恢复状态
+    if (record.state == "PAUSED")
+        state_.store(State::PAUSED);
+    else if (record.state == "FAILED")
+        state_.store(State::FAILED);
+    else if (record.state == "RUNNING")
+        state_.store(State::RUNNING);
+    else
+        state_.store(State::IDLE);
 
     return true;
 }

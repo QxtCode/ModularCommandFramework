@@ -25,6 +25,7 @@ public:
     ~TasksPool() = default;
 
     /// 从池中取出一个空闲 Task 并传入参数包。池子满时返回 nullptr。
+    /// v2.6: 分配唯一递增 ID（线程安全）。
     Task* Acquire(std::unique_ptr<ParmarPack> pack)
     {
         if (!pack) return nullptr;
@@ -37,6 +38,7 @@ public:
 
         auto& task = tasks_[idx];
         task->Assign(std::move(pack));
+        task->SetID(next_id_.fetch_add(1));
         task->pool_index_ = idx;  // O(1) 归还时直接定位
         return task.get();
     }
@@ -65,6 +67,16 @@ public:
     size_t GetFreeCount() const { std::lock_guard lock(mutex_); return free_indices_.size(); }
     size_t GetTotalCount() const { return tasks_.size(); }
 
+    /// v2.6: 按 task_id 查找 Task。O(n)。Pause/Resume 是低频操作。
+    Task* FindTask(uint32_t task_id) {
+        std::lock_guard lock(mutex_);
+        for (auto& t : tasks_) {
+            if (t && t->GetID() == task_id)
+                return t.get();
+        }
+        return nullptr;
+    }
+
     TasksPool(const TasksPool&) = delete;
     TasksPool& operator=(const TasksPool&) = delete;
 
@@ -84,4 +96,5 @@ private:
     std::vector<std::unique_ptr<Task>> tasks_;
     std::list<size_t>                  free_indices_;
     mutable std::mutex                 mutex_;
+    std::atomic<uint32_t>              next_id_{1};  // v2.6: 唯一递增 ID
 };
