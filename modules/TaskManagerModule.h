@@ -1,5 +1,5 @@
 /// =================================================================
-///  TaskManagerModule — 任务暂停/恢复/列表 (v2.6)
+///  TaskManagerModule — 任务暂停/恢复/列表 (v2.7)
 /// =================================================================
 ///
 ///  命令:
@@ -44,12 +44,15 @@ public:
 
     bool OnInit() override {
         REGISTER_FUNC("pause", "Pause a task (-v:id|N)", {
-            uint32_t tid = static_cast<uint32_t>(pack->GetAsOr<int>("id", -1));
-            if (static_cast<int>(tid) == static_cast<int>(-1u)) {
+            // 先按 int 读入，用 -1 作为"未传参数"的哨兵；
+            // 确认非负后再转 uint32_t，避免无符号/有符号来回 cast 的绕圈。
+            int id = pack->GetAsOr<int>("id", -1);
+            if (id < 0) {
                 pack->success = false;
                 pack->error.message = "Usage: -m:TaskManager -f:pause -v:id|N";
                 return;
             }
+            uint32_t tid = static_cast<uint32_t>(id);
 
             Task* task = pool_.FindTask(tid);
             if (!task) {
@@ -69,12 +72,14 @@ public:
         });
 
         REGISTER_FUNC("resume", "Resume a paused task (-v:id|N)", {
-            uint32_t tid = static_cast<uint32_t>(pack->GetAsOr<int>("id", -1));
-            if (static_cast<int>(tid) == static_cast<int>(-1u)) {
+            // 同 pause：先按 int 读，-1 为哨兵，确认非负再转 uint32_t。
+            int id = pack->GetAsOr<int>("id", -1);
+            if (id < 0) {
                 pack->success = false;
                 pack->error.message = "Usage: -m:TaskManager -f:resume -v:id|N";
                 return;
             }
+            uint32_t tid = static_cast<uint32_t>(id);
 
             // 1. 从持久化后端加载快照（如果有）
             if (store_) {
@@ -107,6 +112,12 @@ public:
                             cp->error.message = "Unhandled exception in task";
                         }
                     }
+
+                    // 恢复的任务若再次暂停，同样保存快照（否则无法再次 resume）
+                    if (task->GetState() == Task::State::PAUSED && store_) {
+                        store_->Save(task->ExportRecord());
+                    }
+
                     auto* cp = task->CurrentPack();
                     if (cp) {
                         auto result = std::make_unique<ParmarPack>(*cp);

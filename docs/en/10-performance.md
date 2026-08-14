@@ -1,4 +1,4 @@
-# Performance & Limits — test_shell v2.5
+# Performance & Limits — test_shell v2.7
 
 > Measured on: Intel i7-13700H (16 logical cores), Debug build, cross-platform
 

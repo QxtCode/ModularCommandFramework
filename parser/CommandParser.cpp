@@ -4,7 +4,6 @@
 
 #include "CommandParser.h"
 #include <iostream>
-#include <sstream>
 
 // ---- 辅助：去首尾空格 ----
 static std::string Trim(const std::string& s)
@@ -16,6 +15,143 @@ static std::string Trim(const std::string& s)
     while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1])))
         --end;
     return s.substr(start, end - start);
+}
+
+// =================================================================
+//  TokenizeCommand — 命令字符串分词器（v2.7）
+// =================================================================
+//  逐字符状态机。三种状态回答一个问题：「当前空格是分隔符还是值？」
+//
+//  状态图：
+//    NORMAL ──空格──→ 产出 token
+//    NORMAL ── " ──→ IN_DQUOTE（不存引号）
+//    NORMAL ── ' ──→ IN_SQUOTE（不存引号）
+//    NORMAL ── \ ──→ 吞掉，下一个字符当普通字符
+//    IN_DQUOTE ── " ──→ NORMAL（不存引号）
+//    IN_DQUOTE ── \ ──→ 吞掉，下一个字符如果是 " 或 \ 则当普通字符
+//    IN_SQUOTE ── ' ──→ NORMAL（不存引号）
+//    IN_SQUOTE ── \ ──→ 吞掉，下一个字符如果是 ' 或 \ 则当普通字符
+//
+//  边界行为：
+//    - 未闭合引号 → 到字符串末尾自动结束（不报错，宽松处理）
+//    - 连续空格 → 不产生空 token（已检查 !current.empty()）
+//    - 行尾 \ → 保留字面反斜杠（不做续行）
+//    - 空输入 → 返回空 vector
+std::vector<std::string> TokenizeCommand(const std::string& input)
+{
+    std::vector<std::string> tokens;
+    std::string current;
+
+    enum State { NORMAL, IN_DQUOTE, IN_SQUOTE };
+    State state = NORMAL;
+
+    for (size_t i = 0; i < input.size(); ++i)
+    {
+        char ch = input[i];
+
+        switch (state)
+        {
+        case NORMAL:
+            if (ch == '\\' && i + 1 < input.size())
+            {
+                char next = input[i + 1];
+                // 只在转义这些特殊字符时吞掉反斜杠
+                // \" → "   \' → '   \\ → \   \空格 → 空格
+                // 其他（如 \d → \d）保留反斜杠，保证 Windows 路径不坏
+                if (next == '"' || next == '\'' || next == '\\' ||
+                    std::isspace(static_cast<unsigned char>(next)))
+                {
+                    current += next;
+                    ++i;
+                }
+                else
+                {
+                    current += ch;  // 保留字面反斜杠
+                }
+            }
+            else if (ch == '"')
+            {
+                state = IN_DQUOTE;  // 不存引号
+            }
+            else if (ch == '\'')
+            {
+                state = IN_SQUOTE;  // 不存引号
+            }
+            else if (std::isspace(static_cast<unsigned char>(ch)))
+            {
+                // 空白 → 切分
+                if (!current.empty())
+                {
+                    tokens.push_back(current);
+                    current.clear();
+                }
+            }
+            else
+            {
+                current += ch;
+            }
+            break;
+
+        case IN_DQUOTE:
+            if (ch == '\\' && i + 1 < input.size())
+            {
+                char next = input[i + 1];
+                if (next == '"' || next == '\\')
+                {
+                    // \" 变 " , \\ 变 \（反斜杠）
+                    current += next;
+                    ++i;
+                }
+                else
+                {
+                    // 其他字符前的 \ 保留字面反斜杠
+                    current += ch;
+                }
+            }
+            else if (ch == '"')
+            {
+                state = NORMAL;  // 关闭引号，不存引号本身
+            }
+            else
+            {
+                current += ch;  // 引号内所有字符（含空格）直接追加
+            }
+            break;
+
+        case IN_SQUOTE:
+            if (ch == '\\' && i + 1 < input.size())
+            {
+                char next = input[i + 1];
+                if (next == '\'' || next == '\\')
+                {
+                    // \' 变 ' , \\ 变 \（反斜杠）
+                    current += next;
+                    ++i;
+                }
+                else
+                {
+                    current += ch;
+                }
+            }
+            else if (ch == '\'')
+            {
+                state = NORMAL;  // 关闭引号，不存引号本身
+            }
+            else
+            {
+                current += ch;  // 引号内所有字符直接追加
+            }
+            break;
+        }
+    }
+
+    // 最后一个 token（字符串结束 = 隐式切分）
+    if (!current.empty())
+    {
+        tokens.push_back(current);
+    }
+
+    return tokens;
 }
 
 // =================================================================
@@ -87,8 +223,9 @@ bool CommandParser::SendCommand(const std::string& format, std::any value)
 // =================================================================
 //  HandleTXT — 文本格式解析
 // =================================================================
-//  和原来 ConsoleParser::Send() 逻辑完全一样：
-//  按空格切 token → 找 ":" 切出头和值 → 查 head_writers_ → 填充 ParmarPack
+//  TokenizeCommand 切 token → 找 ":" 切出头和值 → 查 head_writers_ → 填充 ParmarPack
+//
+//  v2.7: 用 TokenizeCommand 替换 iss >> token，支持引号保护空格和反斜杠转义。
 bool CommandParser::HandleTXT(std::any& value, LockQueue<ParmarPack>& queue,
                                const std::unordered_map<std::string, CmdWriter>& heads)
 {
@@ -107,10 +244,8 @@ bool CommandParser::HandleTXT(std::any& value, LockQueue<ParmarPack>& queue,
     if (text.empty()) return false;
 
     auto pack = std::make_unique<ParmarPack>();
-    std::istringstream iss(text);
-    std::string token;
 
-    while (iss >> token)
+    for (const auto& token : TokenizeCommand(text))
     {
         auto colon = token.find(':');
         if (colon == std::string::npos)

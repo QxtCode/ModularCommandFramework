@@ -151,7 +151,91 @@ bool Task::Step(EventBus& bus)
 }
 
 // ================================================================
-//  v2.6: Restore — 从 TaskRecord 恢复分片状态
+//  v2.7: 快照序列化辅助 — 解析 shards_json（JSON 数组）
+// ================================================================
+//
+//  shards_json 格式：一个 JSON 数组，每个元素是一个分片
+//  （即单个 ParmarPack::ToJson() 的输出）：
+//    [ {"mod":"...","func":"...","params":{...},...}, {...}, ... ]
+//
+//  这里用括号计数提取每个对象子串，再交给 ParmarPack::FromJson 解析。
+namespace {
+
+std::vector<std::unique_ptr<ParmarPack>> ParseShardsJson(const std::string& json)
+{
+    std::vector<std::unique_ptr<ParmarPack>> shards;
+    size_t i = 0;
+    parmar_json::SkipWs(json, i);
+    if (i >= json.size() || json[i] != '[') return shards;
+    ++i;
+
+    while (true) {
+        parmar_json::SkipWs(json, i);
+        if (i >= json.size() || json[i] == ']') break;   // 数组结束
+        if (json[i] != '{') break;                        // 非法元素
+
+        // 括号计数找到匹配的 '}'（正确处理字符串内的 { } 与转义）
+        size_t start = i;
+        int depth = 0;
+        bool in_str = false, esc = false;
+        size_t j = i;
+        for (; j < json.size(); ++j) {
+            char c = json[j];
+            if (in_str) {
+                if (esc) esc = false;
+                else if (c == '\\') esc = true;
+                else if (c == '"') in_str = false;
+                continue;
+            }
+            if (c == '"') { in_str = true; continue; }
+            if (c == '{') depth++;
+            else if (c == '}') { if (--depth == 0) { ++j; break; } }
+        }
+        if (depth != 0) break;  // 括号不匹配
+
+        auto pack = std::make_unique<ParmarPack>();
+        if (!ParmarPack::FromJson(json.substr(start, j - start), *pack))
+            break;
+        shards.push_back(std::move(pack));
+
+        i = j;
+        parmar_json::SkipWs(json, i);
+        if (i < json.size() && json[i] == ',') { ++i; continue; }
+        break;
+    }
+    return shards;
+}
+
+}  // namespace
+
+// ================================================================
+//  v2.7: ExportRecord — 导出当前状态为快照
+// ================================================================
+TaskRecord Task::ExportRecord() const
+{
+    TaskRecord rec;
+    std::lock_guard lock(shards_mutex_);
+
+    rec.task_id       = id_.load();
+    rec.state         = StateName();
+    rec.current_shard = current_;
+    rec.declared_total = declared_total_.load();
+
+    // 序列化全部分片为 JSON 数组
+    std::string json = "[";
+    for (size_t i = 0; i < shards_.size(); ++i) {
+        if (i) json += ',';
+        if (shards_[i]) json += shards_[i]->ToJson();
+        else            json += "null";
+    }
+    json += ']';
+    rec.shards_json = std::move(json);
+
+    return rec;
+}
+
+// ================================================================
+//  v2.7: Restore — 从 TaskRecord 恢复分片状态
 // ================================================================
 bool Task::Restore(const TaskRecord& record)
 {
@@ -159,30 +243,29 @@ bool Task::Restore(const TaskRecord& record)
     State s = state_.load();
     if (s != State::IDLE) return false;
 
+    // 从 shards_json 反序列化真实分片
+    std::vector<std::unique_ptr<ParmarPack>> shards =
+        ParseShardsJson(record.shards_json);
+
+    if (shards.empty()) {
+        // 空快照：放一个占位分片，保证 Step() 不崩溃
+        auto pack = std::make_unique<ParmarPack>();
+        pack->mod_id  = "restored";
+        pack->func_id = "restored";
+        pack->success = false;
+        shards.push_back(std::move(pack));
+    }
+
     std::lock_guard lock(shards_mutex_);
 
-    // 从 shards_json 重建分片
     shards_.clear();
+    for (auto& p : shards) {
+        p->owner_task = this;                 // 分片归属指向恢复后的 task
+        shards_.push_back(std::move(p));
+    }
     current_ = record.current_shard;
     declared_total_.store(record.declared_total);
     id_.store(record.task_id);
-
-    // 恢复至少一个分片（Step() 依赖 shards_ 非空）
-    {
-        auto pack = std::make_unique<ParmarPack>();
-        if (!record.shards_json.empty()) {
-            // TODO: 从 JSON 反序列化完整分片数据
-            pack->mod_id  = "restored";
-            pack->func_id = "restored";
-        } else {
-            // 空快照: 创建占位分片，保证 Step() 不崩溃
-            pack->mod_id  = "restored";
-            pack->func_id = "restored";
-        }
-        pack->success = false;
-        pack->owner_task = this;
-        shards_.push_back(std::move(pack));
-    }
 
     // 恢复状态
     if (record.state == "PAUSED")

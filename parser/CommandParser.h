@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include "core/LockQueue.h"
 #include "core/ParmarPack.h"
 
@@ -134,3 +135,25 @@ private:
     std::unordered_map<std::string, FormatHandler> format_handlers_;
     std::unordered_map<std::string, CmdWriter> head_writers_;
 };
+
+// =================================================================
+//  TokenizeCommand — 命令字符串分词器（v2.7）
+// =================================================================
+//  把一行命令字符串切成 token 数组，支持引号保护和反斜杠转义。
+//
+//  规则：
+//    - 空白字符（空格/Tab）作为 token 分隔符
+//    - "..." 双引号内空格不切分，引号本身不进入 token
+//    - '...' 单引号内空格不切分，引号本身不进入 token
+//    - \ 转义下一个字符（\ 变成空格，\" 变成 "，\\ 变成 \）
+//    - 未闭合的引号到字符串末尾自动结束
+//
+//  示例：
+//    "-m:Print -f:2"               → ["-m:Print", "-f:2"]
+//    "-v:msg|\"hello world\""       → ["-v:msg|hello world"]
+//    "-v:msg|'hello world'"         → ["-v:msg|hello world"]
+//
+//  与 HandleTXT 的关系：
+//    这是纯函数，输入字符串，输出字符串数组。
+//    不涉及 ParmarPack、队列、格式处理器 —— 完全隔离，可独立测试。
+std::vector<std::string> TokenizeCommand(const std::string& input);

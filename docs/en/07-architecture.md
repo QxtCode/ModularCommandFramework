@@ -1,4 +1,4 @@
-# v2.5 Architecture — ShellEngine + ResultStore
+# v2.7 Architecture — ShellEngine + ResultStore
 
 ## What changed from v2.4
 
@@ -100,6 +100,34 @@ Priority: `CLI args > config file > built-in defaults`.
 The `log_level` field is applied to `LogModule` after module registration, overriding `log.conf`.
 
 See [10-performance](10-performance.md) for the full parameter reference.
+
+## Task Persistence — pause / save / resume (v2.7)
+
+v2.7 completes the pause-store loop that v2.6 only sketched. A paused task is now
+snapshotted to a pluggable `ITaskPersistence` backend, so `resume` can reconstruct
+it from its checkpoint instead of losing it.
+
+```
+pause command → task->Pause()
+  → Worker finishes current shard → Step() returns false
+  → Worker finish path: if PAUSED && store_ → store_->Save(task->ExportRecord())
+  → Release(task)                             // slot returns to pool
+
+resume command → store->Load(id) → pool.Acquire → task->Restore(rec)
+  → Resume → Enqueue → continue from checkpoint
+```
+
+| Component | Role |
+|-----------|------|
+| `ParmarPack::ToJson/FromJson` | Hand-written JSON subset serialization for shards |
+| `Task::ExportRecord()` | Serialize current shards into `TaskRecord.shards_json` |
+| `Task::Restore()` | Deserialize `shards_json` back into real shards |
+| `ITaskPersistence` | Pluggable snapshot backend (Save/Load/Delete/LoadAll/GC) |
+| `ShellEngine::SetTaskPersistence` | Injects the backend; the worker finish path saves on pause |
+
+The backend is injected by `main.cpp` and defaults to `nullptr` (pure in-memory,
+identical to v2.5 behavior). See [05-task-system](05-task-system.md) for the
+interface contract developers must satisfy to plug in FilePersistence / SqlitePersistence.
 
 ## Safety — Slot exception catch-all (v2.5)
 

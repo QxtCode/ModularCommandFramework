@@ -1,4 +1,4 @@
-# test_shell v2.5 文档
+# test_shell v2.7 文档
 
 > **跨平台**: Windows · Linux · macOS &emsp; | &emsp; 构建: `cmake --preset debug`
 

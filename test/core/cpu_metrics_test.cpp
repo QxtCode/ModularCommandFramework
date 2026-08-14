@@ -124,7 +124,7 @@ TEST(CpuMetrics, MultiCoreScaling)
     m.Measure();
 
     unsigned hw = std::thread::hardware_concurrency();
-    unsigned N = hw < 4 ? hw : 4;
+    unsigned N = (hw > 2) ? hw - 2 : 1;  // v2.7: hw-2，留两核给 OS
     std::atomic<bool> stop{false};
     std::vector<std::thread> workers;
     for (unsigned i = 0; i < N; ++i)

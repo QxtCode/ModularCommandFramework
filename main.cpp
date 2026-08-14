@@ -1,5 +1,5 @@
 /// =================================================================
-///  test_shell v2.5 — 多线程命令框架
+///  test_shell v2.7 — 多线程命令框架
 /// =================================================================
 ///
 ///  启动流程：
@@ -63,7 +63,7 @@ int main(int argc, char* argv[])
     cfg.ApplyArgs(argc, argv);            // 命令行覆盖
     cfg.Print();
 
-    cout << "===== test_shell v2.5 =====" << endl << endl;
+    cout << "===== test_shell v2.7 =====" << endl << endl;
 
     // ================================================================
     //  Modules — register before engine starts
@@ -78,7 +78,7 @@ int main(int argc, char* argv[])
     // 应用配置中的日志级别（覆盖 log.conf 设置）
     LogFac::Instance().GetLogger().SetLevel(StringToLogLevel(cfg.log_level));
 
-    LOG_INFO("test_shell v2.5 started");
+    LOG_INFO("test_shell v2.7 started");
 
     bus.RegisterSignal<uint32_t, bool, int, const char*, const char*>("task.result");
 
@@ -87,10 +87,15 @@ int main(int argc, char* argv[])
     // ================================================================
     //  Engine — event-driven main loop, configured from cfg
     // ================================================================
-    ShellEngine engine(cfg.pool_size, cfg.workers);
-
-    // v2.6: TaskManager — pause/resume/list（进程内有效）
+    // v2.7: 持久化后端声明在 engine 之前 —— 析构顺序保证 store 后于 engine
+    // 销毁。ShellEngine::Shutdown 会 join 所有 Worker，之后不再访问 store，
+    // 避免悬空指针。当前用进程内 MemPersistence，可替换为 FilePersistence。
     auto taskStore = std::make_shared<MemPersistence>();
+
+    ShellEngine engine(cfg.pool_size, cfg.workers);
+    engine.SetTaskPersistence(taskStore.get());   // 框架层在暂停时保存快照
+
+    // v2.7: TaskManager — pause/resume/list
     mgr.AddModule(std::make_unique<TaskManagerModule>(
         engine.GetPool(), engine.GetWorkers(), taskStore.get()));
 

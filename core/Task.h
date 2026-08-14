@@ -5,6 +5,7 @@
 #include <mutex>
 #include <vector>
 #include "ParmarPack.h"
+#include "core/ITaskPersistence.h"  // TaskRecord（快照结构）
 
 // =================================================================
 //  Task — 分片任务（Shard-based Task）
@@ -27,7 +28,7 @@
 //                        └──Cancel()──▶ FAILED
 //               Reset() 从任意状态回到 IDLE
 //
-//  【PAUSED 流程】v2.6
+//  【PAUSED 流程】v2.7
 //   ① 模块回调调 task->Pause() → state_ = PAUSED（原子操作，瞬间完成）
 //   ② Worker 在当前 shard 完成后检查 state_ → PAUSED → Step 返回 false
 //   ③ Worker 退出 while 循环 → 可保存快照 → Release(task) 归还槽位
@@ -152,7 +153,7 @@ public:
     }
 
     // ============================================================
-    //  v2.6: 快照 / 恢复（ITaskStore 用）
+    //  v2.7: 快照 / 恢复（ITaskPersistence 用）
     // ============================================================
     /// 导出当前状态为 TaskRecord。调用方负责序列化 shards_json。
     /// 线程安全: 内部加锁读取 shards_ + current_。
@@ -170,7 +171,11 @@ public:
     /// 从 TaskRecord 恢复状态。调用前 task 必须处于 IDLE 状态。
     /// shards 从 shards_json 反序列化填充。
     /// @return false 如果 task 不在 IDLE 状态或恢复失败。
-    bool Restore(const struct TaskRecord& record);
+    bool Restore(const TaskRecord& record);
+
+    /// 导出当前状态为 TaskRecord 快照（含序列化的全部分片）。
+    /// 线程安全：内部加锁读取 shards_ / current_ / declared_total。
+    TaskRecord ExportRecord() const;
 
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;

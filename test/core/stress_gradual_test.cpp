@@ -58,7 +58,7 @@ static void RunStress(int duration_sec)
     auto& bus = EventBus::GetInstance();
 
     unsigned hw = std::thread::hardware_concurrency();
-    int workers_n = (hw > 4) ? static_cast<int>(hw) - 2 : 2;
+    int workers_n = (hw > 2) ? static_cast<int>(hw) - 2 : 1;  // v2.7: hw-2
 
     std::cout << "\n========== " << duration_sec << "s Stress ("
               << workers_n << " workers, " << hw - workers_n

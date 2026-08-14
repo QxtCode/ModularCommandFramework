@@ -43,6 +43,12 @@
 
 using namespace std::chrono_literals;
 
+// v2.7: 压力测试线程数 = CPU 总核心 - 2，避免跑满所有核心影响 CI 稳定性
+static int StressWorkers() {
+    unsigned hw = std::thread::hardware_concurrency();
+    return (hw > 2) ? static_cast<int>(hw) - 2 : 1;
+}
+
 // ================================================================
 //  辅助工具
 // ================================================================
@@ -121,8 +127,9 @@ protected:
 TEST_F(PeakStressTest, RampUpThroughput) {
     RegisterFastModule("PeakFast");
 
-    constexpr int POOL = 16, WORKERS = 8, DURATION_MS = 1000;
-    ShellEngine engine(POOL, WORKERS);
+    const int W = StressWorkers();
+    constexpr int DURATION_MS = 1000;
+    ShellEngine engine(W, W);
     std::thread runner([&]() { engine.Run(); });
 
     // Clear ResultStore
@@ -189,10 +196,10 @@ TEST_F(PeakStressTest, RampUpThroughput) {
 TEST_F(PeakStressTest, BurstOverload) {
     RegisterFastModule("PeakFast");
 
-    constexpr int POOL = 8, WORKERS = 4;
+    const int W = StressWorkers();
     constexpr int BURST = 500;  // 500 条命令瞬间注入
 
-    ShellEngine engine(POOL, WORKERS);
+    ShellEngine engine(W, W);
     std::thread runner([&]() { engine.Run(); });
 
     int accepted = 0, rejected = 0;
@@ -247,11 +254,11 @@ TEST_F(PeakStressTest, BurstOverload) {
 TEST_F(PeakStressTest, SustainedLoad) {
     RegisterFastModule("PeakFast");
 
-    constexpr int POOL = 16, WORKERS = 8;
+    const int W = StressWorkers();
     constexpr int DURATION_SEC = 10;  // 10 秒足够发现趋势
     constexpr int RATE_PER_SEC = 200; // 目标注入速率
 
-    ShellEngine engine(POOL, WORKERS);
+    ShellEngine engine(W, W);
     size_t mem_start = GetWorkingSetKB();
 
     std::thread runner([&]() { engine.Run(); });
@@ -287,20 +294,19 @@ TEST_F(PeakStressTest, SustainedLoad) {
         if (engine.FreeTasks() == engine.TotalTasks()) break;
         std::this_thread::sleep_for(20ms);
     }
-    std::this_thread::sleep_for(200ms);
 
     auto t1 = std::chrono::steady_clock::now();
     auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-    // 收集
+    size_t mem_end = GetWorkingSetKB();
+
+    // 先停引擎（Shutdown 内有 idle-drain），再收集
+    engine.InjectCommand("/exit");
+    runner.join();
+
     int completed = 0;
     auto batch = ResultStore::Get().Drain();
     completed += static_cast<int>(batch.size());
-
-    size_t mem_end = GetWorkingSetKB();
-
-    engine.InjectCommand("/exit");
-    runner.join();
 
     double throughput = total_ms > 0 ? (completed * 1000.0 / total_ms) : 0;
     long long mem_delta = static_cast<long long>(mem_end) - static_cast<long long>(mem_start);
@@ -326,12 +332,12 @@ TEST_F(PeakStressTest, SustainedLoad) {
 TEST_F(PeakStressTest, PoolUtilization) {
     RegisterFastModule("PeakFast");
 
-    constexpr int POOL = 8, WORKERS = 4;
-    ShellEngine engine(POOL, WORKERS);
+    const int W = StressWorkers();
+    ShellEngine engine(W, W);
     std::thread runner([&]() { engine.Run(); });
 
     // 注入正好填满池子的命令数
-    for (int i = 0; i < POOL; ++i)
+    for (int i = 0; i < W; ++i)
         engine.InjectCommand("-m:PeakFast -f:nop");
 
     // 等池子被占满（或至少部分占用）
@@ -360,9 +366,9 @@ TEST_F(PeakStressTest, PoolUtilization) {
 TEST_F(PeakStressTest, RecoveryAfterOverload) {
     RegisterFastModule("PeakFast");
 
-    constexpr int POOL = 4, WORKERS = 2;
+    const int W = StressWorkers();
 
-    ShellEngine engine(POOL, WORKERS);
+    ShellEngine engine(W, W);
     std::thread runner([&]() { engine.Run(); });
 
     // Phase 1: 正常负载（基线）
@@ -437,7 +443,8 @@ TEST_F(PeakStressTest, SlotExceptionDoesNotCrashProcess) {
     };
     mgr.AddModule(std::make_unique<CrashMod>());
 
-    ShellEngine engine(4, 2);
+    const int W = StressWorkers();
+    ShellEngine engine(W, W);
     std::thread runner([&]() { engine.Run(); });
 
     // 注入会抛出异常的命令

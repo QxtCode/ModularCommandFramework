@@ -1,4 +1,4 @@
-# test_shell v2.5 Documentation
+# test_shell v2.7 Documentation
 
 > **Cross-platform**: Windows · Linux · macOS &emsp; | &emsp; Build: `cmake --preset debug`
 
