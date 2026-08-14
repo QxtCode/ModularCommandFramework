@@ -119,12 +119,8 @@ TEST_F(CmdParserTest, TXT_NoParamsSection)
     EXPECT_TRUE(pack->params.empty());
 }
 
-// 注意：TXT 格式的限制
-// 按空格切 token，所以 -v: 的参数值内部不能有空格。
-// 例如 "-v:msg|hello world" 会被切成两个 token："-v:msg|hello" 和 "world"，
-// 后者因为没有 ":" 会被丢弃。
-// 这是简化设计 —— 控制台命令参数本来就不该含空格。
-// 如果未来需要支持含空格的参数，可以加引号解析或者换 JSON 格式。
+// v2.7: TokenizeCommand 已集成到 HandleTXT，支持引号保护空格。
+// 带空格的参数值用双引号包裹即可，例如 -v:msg|"hello world"。
 
 // ================================================================
 //  SendPack — UI 直传 ParmarPack（不走 std::any）
@@ -591,4 +587,390 @@ TEST_F(CmdParserTest, Queue_SetupClearsStaleData)
     // SetUp 中已经清空队列 — 验证确实清了
     std::unique_ptr<ParmarPack> pack;
     EXPECT_FALSE(parser->TryPopPack(pack));
+}
+
+// ================================================================
+//  TokenizeCommand — 分词器隔离测试（v2.7 新增）
+// ================================================================
+//  TokenizeCommand 是纯函数：string → vector<string>。
+//  不依赖 CommandParser 单例、队列、ParmarPack，完全隔离测试。
+//  测试通过后才会集成到 HandleTXT 中替换 iss >> token。
+
+class TokenizerTest : public ::testing::Test {};
+
+// ---- 基本：纯空格切分（行为不变） ----
+
+TEST_F(TokenizerTest, Basic_WhitespaceSplit)
+{
+    auto tokens = TokenizeCommand("-m:Calc -f:add -v:a|1,b|2");
+    ASSERT_EQ(tokens.size(), 3u);
+    EXPECT_EQ(tokens[0], "-m:Calc");
+    EXPECT_EQ(tokens[1], "-f:add");
+    EXPECT_EQ(tokens[2], "-v:a|1,b|2");
+}
+
+TEST_F(TokenizerTest, Basic_OnlyModule)
+{
+    auto tokens = TokenizeCommand("-m:MyModule");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-m:MyModule");
+}
+
+TEST_F(TokenizerTest, Basic_ChineseNoQuotes)
+{
+    auto tokens = TokenizeCommand("-m:测试 -f:你好 -v:msg|世界");
+    ASSERT_EQ(tokens.size(), 3u);
+    EXPECT_EQ(tokens[0], "-m:测试");
+    EXPECT_EQ(tokens[1], "-f:你好");
+    EXPECT_EQ(tokens[2], "-v:msg|世界");
+}
+
+TEST_F(TokenizerTest, Basic_EmptyInput)
+{
+    auto tokens = TokenizeCommand("");
+    EXPECT_TRUE(tokens.empty());
+}
+
+TEST_F(TokenizerTest, Basic_OnlyWhitespace)
+{
+    auto tokens = TokenizeCommand("   \t  ");
+    EXPECT_TRUE(tokens.empty());
+}
+
+TEST_F(TokenizerTest, Basic_ConsecutiveSpaces)
+{
+    auto tokens = TokenizeCommand("-m:A    -f:B");
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0], "-m:A");
+    EXPECT_EQ(tokens[1], "-f:B");
+}
+
+// ---- 双引号：值内含空格 ----
+
+TEST_F(TokenizerTest, DQuote_SpaceInValue)
+{
+    auto tokens = TokenizeCommand("-m:Print -f:echo -v:msg|\"hello world\"");
+    ASSERT_EQ(tokens.size(), 3u);
+    EXPECT_EQ(tokens[0], "-m:Print");
+    EXPECT_EQ(tokens[1], "-f:echo");
+    EXPECT_EQ(tokens[2], "-v:msg|hello world");
+}
+
+TEST_F(TokenizerTest, DQuote_MultipleWordsInValue)
+{
+    auto tokens = TokenizeCommand("-v:desc|\"C++ command framework\"");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:desc|C++ command framework");
+}
+
+TEST_F(TokenizerTest, DQuote_TwoQuotedValues)
+{
+    auto tokens = TokenizeCommand(
+        "-v:src|\"C:/my files/in.txt\",dst|\"/home/user/out data\"");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0],
+        "-v:src|C:/my files/in.txt,dst|/home/user/out data");
+}
+
+// ---- 单引号 ----
+
+TEST_F(TokenizerTest, SQuote_SpaceInValue)
+{
+    auto tokens = TokenizeCommand("-v:msg|'hello world'");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:msg|hello world");
+}
+
+TEST_F(TokenizerTest, SQuote_PreservesDQuoteInside)
+{
+    // 单引号内的双引号是普通字符
+    auto tokens = TokenizeCommand("-v:msg|'he said \"hello\"'");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:msg|he said \"hello\"");
+}
+
+// ---- 反斜杠转义 ----
+
+TEST_F(TokenizerTest, Escape_Space)
+{
+    auto tokens = TokenizeCommand("-v:msg|hello\\ world");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:msg|hello world");
+}
+
+TEST_F(TokenizerTest, Escape_Backslash)
+{
+    auto tokens = TokenizeCommand("-v:path|C:\\\\Users\\\\test");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:path|C:\\Users\\test");
+}
+
+TEST_F(TokenizerTest, Escape_DQuote)
+{
+    auto tokens = TokenizeCommand("-v:msg|\\\"hello\\\"");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:msg|\"hello\"");
+}
+
+// 注意：TokenizeCommand 暂不支持双引号内部的 \" 转义。
+// 即 `"hello \"world\""` 中的 \" 不会产出一个字面双引号。
+// 因为双引号内遇到 \ 时，尝试读下一个字符如果也是 " 则双双跳过，
+// 但 C++ 字符串字面量与分词器转义规则叠在一起难以在测试中精确构造输入。
+// 此功能不影响核心价值（引号保护空格），如有需求再补。
+
+// ---- 混合场景 ----
+
+TEST_F(TokenizerTest, Mixed_QuotedAndUnquoted)
+{
+    auto tokens = TokenizeCommand(
+        "-m:Search -f:query -v:term|\"hello world\",limit|10");
+    ASSERT_EQ(tokens.size(), 3u);
+    EXPECT_EQ(tokens[0], "-m:Search");
+    EXPECT_EQ(tokens[1], "-f:query");
+    EXPECT_EQ(tokens[2], "-v:term|hello world,limit|10");
+}
+
+TEST_F(TokenizerTest, Mixed_QuoteOnlyValuePart)
+{
+    // 只有 | 后面的部分加引号
+    auto tokens = TokenizeCommand("-m:Log -f:write -v:msg|\"error: disk full\"");
+    ASSERT_EQ(tokens.size(), 3u);
+    EXPECT_EQ(tokens[2], "-v:msg|error: disk full");
+}
+
+// ---- 边界条件 ----
+
+TEST_F(TokenizerTest, Edge_UnclosedDQuote)
+{
+    // 未闭合引号 → 到字符串末尾自动结束（宽松处理）
+    auto tokens = TokenizeCommand("-v:msg|\"hello world");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:msg|hello world");
+}
+
+TEST_F(TokenizerTest, Edge_UnclosedSQuote)
+{
+    auto tokens = TokenizeCommand("-v:msg|'hello world");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:msg|hello world");
+}
+
+TEST_F(TokenizerTest, Edge_EmptyQuotedString)
+{
+    // "" 不产生任何字符，token 只含引号前的内容
+    auto tokens = TokenizeCommand("-v:key|\"\"");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:key|");  // 值为空
+}
+
+TEST_F(TokenizerTest, Edge_EscapeAtEnd)
+{
+    // 行尾 \ → 保留字面反斜杠
+    auto tokens = TokenizeCommand("-v:path|C:\\\\");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:path|C:\\");
+}
+
+TEST_F(TokenizerTest, Edge_TabAsSeparator)
+{
+    auto tokens = TokenizeCommand("-m:A\t-f:B");
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0], "-m:A");
+    EXPECT_EQ(tokens[1], "-f:B");
+}
+
+TEST_F(TokenizerTest, Edge_LeadingAndTrailingSpaces)
+{
+    auto tokens = TokenizeCommand("  -m:A -f:B  ");
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0], "-m:A");
+    EXPECT_EQ(tokens[1], "-f:B");
+}
+
+TEST_F(TokenizerTest, Edge_SingleToken)
+{
+    auto tokens = TokenizeCommand("hello");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "hello");
+}
+
+// ---- 扩展现有测试：原来不能过的现在能过了 ----
+
+TEST_F(TokenizerTest, Regression_SpaceInParamValue)
+{
+    // 这是之前会截断的场景：-v:key|hello world
+    // 现在用引号保护 → 完整保留
+    auto tokens = TokenizeCommand("-m:Print -f:2 -v:Param|\"hello world\"");
+    ASSERT_EQ(tokens.size(), 3u);
+    EXPECT_EQ(tokens[2], "-v:Param|hello world");
+}
+
+TEST_F(TokenizerTest, Regression_PathWithSpaces)
+{
+    auto tokens = TokenizeCommand(
+        "-m:Files -f:open -v:src|\"C:/Program Files/app/data.txt\"");
+    ASSERT_EQ(tokens.size(), 3u);
+    EXPECT_EQ(tokens[2], "-v:src|C:/Program Files/app/data.txt");
+}
+
+// ================================================================
+//  边界条件 — 第二轮：相邻引号、引号位置、嵌套、连续转义
+// ================================================================
+
+TEST_F(TokenizerTest, Edge_AdjacentQuotes)
+{
+    // "a""b" → 同 token 内两对引号拼接
+    auto tokens = TokenizeCommand("-v:key|\"a\"\"b\"");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:key|ab");
+}
+
+TEST_F(TokenizerTest, Edge_QuotedTokensSeparatedBySpace)
+{
+    // "a" "b" → 空格分隔 = 两个 token
+    auto tokens = TokenizeCommand("\"a\" \"b\"");
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0], "a");
+    EXPECT_EQ(tokens[1], "b");
+}
+
+TEST_F(TokenizerTest, Edge_SpacesAtQuoteEdges)
+{
+    // 引号边界空格不能丢
+    auto tokens = TokenizeCommand("-v:msg|\" hello world \"");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:msg| hello world ");
+}
+
+TEST_F(TokenizerTest, Edge_QuoteNotAtTokenStart)
+{
+    // 引号可以在 token 中间出现
+    auto tokens = TokenizeCommand("-v:cfg|key=\"my value\",opt|1");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:cfg|key=my value,opt|1");
+}
+
+TEST_F(TokenizerTest, Edge_NestedDQuotes)
+{
+    // "he said "hello"" → he said hello（中间无空格，合并为一个 token，与 bash 一致）
+    auto tokens = TokenizeCommand("\"he said \"hello\"\"");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "he said hello");
+}
+
+TEST_F(TokenizerTest, Edge_SingleQuoteInsideDQuote)
+{
+    // 双引号内的单引号就是普通字符
+    auto tokens = TokenizeCommand("-v:msg|\"it's a test\"");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:msg|it's a test");
+}
+
+TEST_F(TokenizerTest, Edge_EscapeNonSpecialInDQuote)
+{
+    // 双引号内 \ 只在 \" 和 \\ 时被吞，\空格 保留反斜杠
+    auto tokens = TokenizeCommand("\"hello\\ world\"");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "hello\\ world");
+}
+
+TEST_F(TokenizerTest, Edge_EscapeNonSpecialInSQuote)
+{
+    // 单引号内同理
+    auto tokens = TokenizeCommand("'hello\\ world'");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "hello\\ world");
+}
+
+TEST_F(TokenizerTest, Edge_QuadBackslash)
+{
+    // \\\\ → \\  （两对 \\ 各生产一个 \）
+    auto tokens = TokenizeCommand("-v:path|\\\\\\\\");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:path|\\\\");
+}
+
+TEST_F(TokenizerTest, Edge_NewlineInQuotes)
+{
+    // 引号内的 \n 保留，不切分
+    auto tokens = TokenizeCommand("-v:msg|\"line1\nline2\"");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "-v:msg|line1\nline2");
+}
+
+TEST_F(TokenizerTest, Edge_EscapeAtEndOfDQuote)
+{
+    // 未闭合引号 + 行尾反斜杠 → 反斜杠保留
+    auto tokens = TokenizeCommand("\"hello\\");
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0], "hello\\");
+}
+
+// ================================================================
+//  联动测试：TokenizeCommand 已集成到 HandleTXT → 走完整链路
+// ================================================================
+//  这些测试通过 CommandParser::SendCommand("TXT", ...) 验证：
+//  字符串 → TokenizeCommand → HandleTXT → head_writers → ParmarPack
+
+TEST_F(CmdParserTest, Integration_QuotedValueWithSpace)
+{
+    // 核心回归：带空格的参数值走完整链路
+    bool ok = parser->SendCommand("TXT",
+        std::any(std::string("-m:Search -f:query -v:term|\"hello world\",limit|10")));
+    EXPECT_TRUE(ok);
+
+    auto pack = parser->PopPack();
+    ASSERT_NE(pack, nullptr);
+    EXPECT_EQ(pack->mod_id, "Search");
+    EXPECT_EQ(pack->func_id, "query");
+    ASSERT_TRUE(pack->params.count("term"));
+    EXPECT_EQ(pack->params["term"][0], "hello world");  // 空格完整保留！
+    ASSERT_TRUE(pack->params.count("limit"));
+    EXPECT_EQ(pack->params["limit"][0], "10");
+}
+
+TEST_F(CmdParserTest, Integration_PathWithSpaces)
+{
+    bool ok = parser->SendCommand("TXT",
+        std::any(std::string("-m:Files -f:open -v:src|\"C:/Program Files/app/data.txt\"")));
+    EXPECT_TRUE(ok);
+
+    auto pack = parser->PopPack();
+    ASSERT_NE(pack, nullptr);
+    EXPECT_EQ(pack->mod_id, "Files");
+    EXPECT_EQ(pack->func_id, "open");
+    ASSERT_TRUE(pack->params.count("src"));
+    EXPECT_EQ(pack->params["src"][0], "C:/Program Files/app/data.txt");
+}
+
+TEST_F(CmdParserTest, Integration_ChineseWithSpaceInValue)
+{
+    bool ok = parser->SendCommand("TXT",
+        std::any(std::string("-m:测试模块 -f:你好 -v:msg|\"世界 你好\",lang|中文")));
+    EXPECT_TRUE(ok);
+
+    auto pack = parser->PopPack();
+    ASSERT_NE(pack, nullptr);
+    EXPECT_EQ(pack->mod_id, "测试模块");
+    EXPECT_EQ(pack->func_id, "你好");
+    EXPECT_EQ(pack->params["msg"][0], "世界 你好");
+    EXPECT_EQ(pack->params["lang"][0], "中文");
+}
+
+TEST_F(CmdParserTest, Integration_MultipleSpacedValues)
+{
+    bool ok = parser->SendCommand("TXT",
+        std::any(std::string(
+            "-m:Log -f:write "
+            "-v:msg|\"disk full error\",level|\"critical alert\","
+            "path|\"/var/log/my app.log\"")));
+    EXPECT_TRUE(ok);
+
+    auto pack = parser->PopPack();
+    ASSERT_NE(pack, nullptr);
+    EXPECT_EQ(pack->mod_id, "Log");
+    EXPECT_EQ(pack->func_id, "write");
+    EXPECT_EQ(pack->params["msg"][0],   "disk full error");
+    EXPECT_EQ(pack->params["level"][0], "critical alert");
+    EXPECT_EQ(pack->params["path"][0],  "/var/log/my app.log");
 }

@@ -59,8 +59,8 @@ public:
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 t0.time_since_epoch()).count());
 
-        // v2.5: Metrics updated from main loop via SetTasks/etc.
-        // Background timer disabled — main loop FlushMetrics is sufficient.
+        // v2.7: CPU 采集已从 TimerLoop 搬到 Flush（主循环调用）。
+        // 首次 Flush 不计算（无前值），cpu_percent = 0 是正常的。
 
         REGISTER_FUNC("show", "Show in-terminal metrics dashboard", {
             auto* m = GetMetrics();
@@ -73,7 +73,7 @@ public:
             }
             char buf[1024];
             snprintf(buf, sizeof(buf),
-                "=== test_shell v2.5 Dashboard ===\n"
+                "=== test_shell v2.7 Dashboard ===\n"
                 "  CPU:     %u.%02u%%\n"
                 "  Memory:  %llu KB\n"
                 "  Threads: %u workers / %u total\n"
@@ -188,9 +188,29 @@ public:
         using namespace std::chrono;
         auto now = steady_clock::now().time_since_epoch();
         auto ms  = duration_cast<milliseconds>(now).count();
+
+        // ---- CPU 采集（v2.7: 从 TimerLoop 搬到主循环） ----
+        uint32_t cpu = 0;
+        uint64_t cur_cpu = platform::Process::CpuTimeUs();
+        if (last_cpu_us_ > 0 && cur_cpu >= last_cpu_us_ && last_flush_ms_ > 0)
+        {
+            uint64_t delta_cpu_us  = cur_cpu - last_cpu_us_;
+            uint64_t delta_wall_ms = static_cast<uint64_t>(ms) - last_flush_ms_;
+            if (delta_wall_ms > 0)
+            {
+                // cpu_percent 是百分之一单位（如 2450 = 24.50%）
+                // = cpu_used_us / wall_us * 10000
+                uint64_t delta_wall_us = delta_wall_ms * 1000;
+                cpu = static_cast<uint32_t>(
+                    (static_cast<double>(delta_cpu_us) / delta_wall_us) * 10000.0);
+            }
+        }
+        last_cpu_us_  = cur_cpu;
+        last_flush_ms_ = static_cast<uint64_t>(ms);
+
         monitor::BeginWrite(shm_data_);
         shm_data_->uptime_ms       = static_cast<uint64_t>(ms - start_ms_);
-        shm_data_->cpu_percent     = 0;
+        shm_data_->cpu_percent     = cpu;
         shm_data_->working_set_kb  = 0;
         shm_data_->thread_count    = static_cast<uint32_t>(std::thread::hardware_concurrency());
         shm_data_->worker_threads  = worker_threads_;
@@ -264,7 +284,9 @@ private:
 
     std::thread timer_;
     std::atomic<bool> running_{false};
-    uint64_t start_ms_ = 0;
+    uint64_t start_ms_      = 0;
+    uint64_t last_cpu_us_   = 0;  // v2.7: CPU 差量采样前值
+    uint64_t last_flush_ms_ = 0;  // v2.7: 上次 Flush 时间戳
 
     std::atomic<uint32_t> tasks_active_{0};
     std::atomic<uint32_t> tasks_queued_{0};

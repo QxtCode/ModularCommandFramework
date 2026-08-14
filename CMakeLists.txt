@@ -1,5 +1,5 @@
 # =================================================================
-#  test_shell v2.5 — 跨平台 C++20 命令框架
+#  test_shell v2.7 — 跨平台 C++20 命令框架
 # =================================================================
 #  构建: cmake --preset debug
 #        cmake --build --preset debug
@@ -10,7 +10,7 @@
 
 cmake_minimum_required(VERSION 3.16)
 project(test_shell
-    VERSION 2.5.0
+    VERSION 2.7.0
     DESCRIPTION "C++20 跨平台命令框架 — Signal/Slot + Task Shard + 平台抽象层"
     LANGUAGES CXX
 )

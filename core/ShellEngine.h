@@ -35,6 +35,7 @@
 #include "core/ModuleLifeManager.h"
 #include "core/ResultStore.h"
 #include "core/Task.h"
+#include "core/ITaskPersistence.h"
 #include "core/TasksPool.h"
 #include "core/ThreadPool.h"
 #include "event_bus/event_bus.h"
@@ -103,6 +104,14 @@ public:
     size_t TotalTasks()     const { return tasks_->GetTotalCount(); }
     /// @}
 
+    /// v2.6: 暴露内部组件引用，供 TaskManager 等扩展模块使用。
+    TasksPool&  GetPool()    { return *tasks_; }
+    ThreadPool& GetWorkers() { return *workers_; }
+
+    /// v2.7: 注入持久化后端。nullptr（默认）= 纯内存，暂停任务不落盘。
+    /// 生命周期：后端必须比 ShellEngine 活得久（main.cpp 里声明在 engine 之前）。
+    void SetTaskPersistence(ITaskPersistence* store) { store_ = store; }
+
 private:
     // ================================================================
     //  四步流水线
@@ -136,6 +145,7 @@ private:
     std::unique_ptr<ConsoleFormatter>    fmt_;
     std::unique_ptr<TasksPool>           tasks_;
     std::unique_ptr<ThreadPool>          workers_;
+    ITaskPersistence*                    store_{nullptr};  // v2.7: 可选持久化后端
 };
 
 // ================================================================
@@ -327,6 +337,13 @@ inline void ShellEngine::SubmitTask(std::unique_ptr<ParmarPack> pack) {
                 cp->error.message = "Unhandled exception in task";
             }
         }
+
+        // v2.7: 循环退出后，若任务停在 PAUSED，保存快照供 resume 恢复。
+        // 必须在 Release 之前——Release 会 Reset 清空分片数据。
+        if (task->GetState() == Task::State::PAUSED && store_) {
+            store_->Save(task->ExportRecord());
+        }
+
         auto* cp = task->CurrentPack();
         if (cp) {
             auto result = std::make_unique<ParmarPack>(*cp);

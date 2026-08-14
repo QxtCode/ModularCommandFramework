@@ -5,44 +5,16 @@
 #include <mutex>
 #include <vector>
 #include "ParmarPack.h"
+#include "core/ITaskPersistence.h"  // TaskRecord（快照结构）
 
 // =================================================================
-//  Task — EventBus 驱动的"分片任务"（Shard-based Task）
+//  Task — 分片任务（Shard-based Task）
 // =================================================================
 //
-//  【设计思想：为什么要有"分片"？】
-//
-//  传统的 Task 执行一个函数就结束了，无法暂停、无法追加后续步骤。
-//  分片模型把一个大任务拆成多个小步骤（shard），每个 shard 就是
-//  一次 EventBus 信号发射。每执行完一个 shard，Task 会检查是否
-//  被暂停，然后再执行下一个。
-//
-//  【工作流程】
-//
-//  初始化:
-//    Task* t = pool.Acquire(pack);   // 从对象池拿 Task，传入参数包
-//    // Assign() 把 pack 存为 shards_[0]
-//
-//  单步执行:
-//    t->Step(bus);
-//    // ① 取 shards_[current_] 作为当前参数包
-//    // ② 组装信号名 = pack->mod_id + "." + pack->func_id
-//    //    例如 "Calculator.add"
-//    // ③ bus.Emit("Calculator.add", pack)
-//    //    → EventBus 找到信号 → 遍历 Slot → 模块的 Execute() 被调用
-//    // ④ 模块执行完 → current_++ → 移到下一个 shard
-//    // ⑤ 检查是否全部完成 → COMPLETED
-//
-//  分片间暂停:
-//    模块在执行期间可以调用 task->Pause()
-//    → 当前 shard 执行完后，Step() 检测到 PAUSED → 返回 false
-//    → 外部调 Resume() → 下次 Step() 继续
-//
-//  动态追加:
-//    模块在 slot 内可以 task->PushShard(new_pack)
-//    → 追加到 shards_ 末尾
-//    → 比如"编译"任务：第1步解析 → 第2步编译 → 第3步链接
-//      每步都是模块 Push 进来的
+//  生活比喻: 快递分拣流水线
+//    每个 Task = 一个包裹，每个 Shard = 一个分拣站。
+//    Step() = 包裹经过一站（发射信号 → 模块处理 → 移到下一站）
+//    包裹可以在站与站之间被暂停、恢复、取消。
 //
 //  【状态机】
 //
@@ -56,14 +28,16 @@
 //                        └──Cancel()──▶ FAILED
 //               Reset() 从任意状态回到 IDLE
 //
-//  【与 v1 的区别】
-//   v1: Task 只是一个壳，Dispatch(pack) 转发给 ModuleLifeManager，
-//       执行权不在 Task 手里，无法暂停/取消/查进度。
-//   v2: Task 掌握执行节奏，每次 Step() 只推进一步，
-//       分片之间可以插入暂停/取消/回调。
-//       模块变成被动响应（通过 EventBus Slot），不主动控制流程。
-// =================================================================
-
+//  【PAUSED 流程】v2.7
+//   ① 模块回调调 task->Pause() → state_ = PAUSED（原子操作，瞬间完成）
+//   ② Worker 在当前 shard 完成后检查 state_ → PAUSED → Step 返回 false
+//   ③ Worker 退出 while 循环 → 可保存快照 → Release(task) 归还槽位
+//   ④ 恢复时: 从快照 Restore → Resume → 重新 Enqueue → 从断点继续
+//
+//  【分片间暂停 — 关键设计】
+//   暂停只在分片之间生效。当前分片不会被打断。
+//   为什么？C++ 没法安全杀线程。暂停一个正在跑的 shard 是做不到的。
+//   解决方案: 把长时间任务拆成小分片（<100ms），每个分片结束都是暂停点。
 class EventBus;
 
 class Task
@@ -177,6 +151,31 @@ public:
         if (current_ >= shards_.size()) return shards_.back().get();
         return shards_[current_].get();
     }
+
+    // ============================================================
+    //  v2.7: 快照 / 恢复（ITaskPersistence 用）
+    // ============================================================
+    /// 导出当前状态为 TaskRecord。调用方负责序列化 shards_json。
+    /// 线程安全: 内部加锁读取 shards_ + current_。
+    std::string StateName() const {
+        switch (state_.load()) {
+            case State::IDLE:      return "IDLE";
+            case State::RUNNING:   return "RUNNING";
+            case State::PAUSED:    return "PAUSED";
+            case State::COMPLETED: return "COMPLETED";
+            case State::FAILED:    return "FAILED";
+        }
+        return "IDLE";
+    }
+
+    /// 从 TaskRecord 恢复状态。调用前 task 必须处于 IDLE 状态。
+    /// shards 从 shards_json 反序列化填充。
+    /// @return false 如果 task 不在 IDLE 状态或恢复失败。
+    bool Restore(const TaskRecord& record);
+
+    /// 导出当前状态为 TaskRecord 快照（含序列化的全部分片）。
+    /// 线程安全：内部加锁读取 shards_ / current_ / declared_total。
+    TaskRecord ExportRecord() const;
 
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;
