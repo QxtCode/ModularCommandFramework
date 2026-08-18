@@ -5,13 +5,25 @@
 ```
                         ┌─────────────────────┐
                         │      main.cpp       │
-                        │  (组装, 不包含逻辑)   │
+                        │ (进程初始化 + 启动)   │
                         └──────────┬──────────┘
                                    │ 创建并使用
+                        ┌──────────▼──────────┐
+                        │      ShellApp       │  ★ UI integration
+                        │  ─────────────────  │
+                        │ + GetEngine()       │
+                        │ + GetConfig()       │
+                        │ + Run()             │
+                        │ - SetupModules()    │
+                        │ - store_, engine_   │
+                        └──────────┬──────────┘
+                                   │ 持有并组装
                         ┌──────────▼──────────┐
                         │    ShellEngine      │  ★ v2.5 新增
                         │  ─────────────────  │
                         │ + Run()             │
+                        │ + RunWithoutInput() │  ★ UI integration
+                        │ + SetResultSink()   │  ★ UI integration
                         │ + Shutdown()        │
                         │ + InjectCommand() ◄─│── test hook
                         │ + RequestStop()  ◄─│── test hook
@@ -130,6 +142,8 @@
 
 | From | To | Kind |
 |------|----|------|
+| `ShellApp` | `ShellEngine` | owns (unique_ptr) |
+| `ShellApp` | `MemPersistence` | owns (shared_ptr) |
 | `ShellEngine` | `ThreadPool` | owns |
 | `ShellEngine` | `TasksPool` | owns |
 | `ShellEngine` | `ResultStore` | uses (singleton) |

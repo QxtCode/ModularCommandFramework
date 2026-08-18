@@ -151,21 +151,45 @@ try {
 A misbehaving third-party module callback won't crash the entire process.
 The slot is marked dead after an exception and excluded from future snapshots.
 
-## main.cpp — assembly only
+## ShellApp — the application assembler (UI integration)
+
+The assembly logic that used to live in `main.cpp` (load config → register modules →
+create engine → inject persistence backend → attach TaskManager) is now extracted into
+`core/ShellApp.h`. CLI and UI share the same assembly code, avoiding duplication.
 
 ```cpp
-int main() {
-    平台初始化
-    注册模块 (PrintModule, LogModule, MetricsCollector)
-    注册框架信号
-    扫描插件
-    ShellEngine engine(8, 4);
-    engine.Run();
-    engine.Shutdown();
+// CLI — assemble + run, main stays a few lines
+int main(int argc, char* argv[]) {
+    InitConsole(); InitLeakDetection();
+    ShellApp app(argc, argv);
+    app.Run();
+    LOG_PLAIN("Goodbye.");
 }
+
+// UI / AI embedding — same assembly, different "run"
+ShellApp app;                                   // default config, quiet mode
+app.GetEngine().SetResultSink([&](auto& pack){ /* forward to frontend */ });
+std::thread t([]{ app.GetEngine().RunWithoutInput(); });
 ```
 
-main.cpp went from 262 lines to 74. The loop logic, done_queue, input thread, and cv sync live in ShellEngine.
+`ShellApp` assembles but does not run — CLI and UI run differently, so it hands out
+the engine and lets the caller decide `Run()` vs `RunWithoutInput()`.
+
+## ShellEngine — two ways to run
+
+| Method | Use case | Input thread |
+|--------|----------|-------------|
+| `Run()` | CLI interactive | starts stdin input thread + main loop |
+| `RunWithoutInput()` | UI/AI embedding | main loop only; commands fed via `InjectCommand` |
+
+- `SetResultSink(fn)`: sets the result outlet. With a sink, results go to the callback;
+  without one they go to the console (`ConsoleFormatter`).
+- Compile-time macro `SHELL_NO_STDIN`: defining it makes `Run()` skip the input thread
+  (equivalent to `RunWithoutInput`). One line in CMake:
+  `target_compile_definitions(... PRIVATE SHELL_NO_STDIN)` — no code changes needed.
+
+main.cpp went from 262 lines to a dozen. The loop logic, input thread, and cv sync
+live in ShellEngine; the assembly lives in ShellApp.
 
 ## Platform Abstraction Layer (v2.5)
 

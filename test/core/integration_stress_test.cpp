@@ -346,6 +346,21 @@ TEST_F(StressTest, PoolCycleIntegrity)
     }
 
     EXPECT_EQ(count.load(), kRounds * kBatch);
+
+    // 最后一轮的 task 可能还没归还：count 在 Emit 内部就 ++ 了，
+    // 而 push 到 done_queue 在 Emit 之后，drain 循环可能提前 break。
+    // 这里补一次最终 drain，等池子全部归还（与 PoolExhaustion 同套路）。
+    for (int w = 0; w < 30 && tasks_->GetFreeCount() < tasks_->GetTotalCount(); ++w)
+    {
+        std::unique_lock lock(done_mutex_);
+        while (!done_queue_.empty())
+        {
+            Task* t = done_queue_.front(); done_queue_.pop();
+            lock.unlock(); tasks_->Release(t); lock.lock();
+        }
+        lock.unlock();
+        std::this_thread::sleep_for(5ms);
+    }
     EXPECT_EQ(tasks_->GetFreeCount(), 16u) << "All tasks returned to pool";
 }
 

@@ -2,14 +2,16 @@
 ///  test_shell v2.7 — 多线程命令框架
 /// =================================================================
 ///
-///  启动流程：
+///  启动流程（v2.7 起，组装逻辑收进 ShellApp）：
 ///
 ///    main()
-///      ├─ ① InitConsole / InitLeakDetection — 平台初始化
-///      ├─ ② Config — platform::Process::ExeDir() + .cfg → 命令行覆盖
-///      ├─ ③ ModuleLifeManager — 注册内置模块 + ScanPluginDirectory()
-///      ├─ ④ ShellEngine(pool_size, workers) — 引擎组装
-///      └─ ⑤ engine.Run() — 进入事件驱动主循环（阻塞直到 /exit）
+///      ├─ ① InitConsole / InitLeakDetection — 进程级平台初始化
+///      ├─ ② ShellApp app(argc, argv)      — 组装（见 core/ShellApp.h）
+///      │      ├─ 加载配置（exe 目录 .cfg → 命令行覆盖）
+///      │      ├─ 注册模块（Print/Log/Metrics/TaskManager + 插件扫描）
+///      │      ├─ 创建 ShellEngine + 注入持久化后端
+///      │      └─ 注册 EventBus 信号
+///      └─ ③ app.Run()                     — 进入事件驱动主循环（阻塞直到 /exit）
 ///
 ///  一条命令的完整旅程（引擎内部）：
 ///
@@ -28,89 +30,25 @@
 ///      ├─ ⑤ 主循环 DrainResults → Formatter → LOG_PLAIN
 ///      └─ ⑥ 主循环 cv.wait_for(HasResults || input), 零空转
 ///
-///  main() 只负责组装。循环逻辑在 ShellEngine 里。
+///  main() 只负责进程初始化 + 组装 + 启动。组装细节在 ShellApp，
+///  循环逻辑在 ShellEngine。
+///
+///  要接 UI？看 docs/zh/13-UI对接.md —— ShellApp 已经把「组装」抽好了，
+///  UI 只需换「运行方式」：后台线程 RunWithoutInput() + SetResultSink()。
 /// =================================================================
 
-#include "core/platform/platform.h"
-#include "core/platform/process.h"
-
-#include <iostream>
-
-#include "core/Config.h"
-#include "core/ModuleLifeManager.h"
-#include "core/ShellEngine.h"
-#include "modules/PrintModule.h"
-#include "modules/logging/LogModule.h"
-#include "modules/TaskManagerModule.h"
-#include "core/MemTaskStore.h"
-#include "event_bus/event_bus.h"
-#include "sdk/IModule.h"
-
-using namespace std;
+#include "core/platform/platform.h"   // InitConsole / InitLeakDetection
+#include "core/ShellApp.h"
 
 int main(int argc, char* argv[])
 {
     InitConsole();
     InitLeakDetection();
 
-    // ================================================================
-    //  Config — file + CLI / 配置加载
-    // ================================================================
-    ShellConfig cfg;
-    // 从 exe 同目录加载配置文件（而非当前工作目录）
-    std::string cfg_path = platform::Process::ExeDir() + "test_shell.cfg";
-    cfg.LoadFromFile(cfg_path);
-    cfg.ApplyArgs(argc, argv);            // 命令行覆盖
-    cfg.Print();
+    // 组装 + 启动。CLI 场景 Run() 阻塞直到 /exit。
+    ShellApp app(argc, argv);
+    app.Run();
 
-    cout << "===== test_shell v2.7 =====" << endl << endl;
-
-    // ================================================================
-    //  Modules — register before engine starts
-    // ================================================================
-    auto& mgr = ModuleLifeManager::GetInstance();
-    auto& bus = EventBus::GetInstance();
-
-    mgr.AddModule(make_unique<PrintModule>());
-    mgr.AddModule(make_unique<LogModule>());
-    mgr.AddModule(make_unique<MetricsCollector>());
-
-    // 应用配置中的日志级别（覆盖 log.conf 设置）
-    LogFac::Instance().GetLogger().SetLevel(StringToLogLevel(cfg.log_level));
-
-    LOG_INFO("test_shell v2.7 started");
-
-    bus.RegisterSignal<uint32_t, bool, int, const char*, const char*>("task.result");
-
-    mgr.ScanPluginDirectory(cfg.plugin_dir);
-
-    // ================================================================
-    //  Engine — event-driven main loop, configured from cfg
-    // ================================================================
-    // v2.7: 持久化后端声明在 engine 之前 —— 析构顺序保证 store 后于 engine
-    // 销毁。ShellEngine::Shutdown 会 join 所有 Worker，之后不再访问 store，
-    // 避免悬空指针。当前用进程内 MemPersistence，可替换为 FilePersistence。
-    auto taskStore = std::make_shared<MemPersistence>();
-
-    ShellEngine engine(cfg.pool_size, cfg.workers);
-    engine.SetTaskPersistence(taskStore.get());   // 框架层在暂停时保存快照
-
-    // v2.7: TaskManager — pause/resume/list
-    mgr.AddModule(std::make_unique<TaskManagerModule>(
-        engine.GetPool(), engine.GetWorkers(), taskStore.get()));
-
-    cout << endl
-         << "  -m:ModuleName -f:FuncID -v:key|val,..." << endl
-         << "  -m:ModuleName -f:help  -> list functions" << endl
-         << "  <enter>  -> list modules" << endl
-         << "  /exit    -> quit" << endl << endl;
-
-    engine.Run();
-    engine.Shutdown();
-
-    // ================================================================
-    //  Done
-    // ================================================================
     LOG_PLAIN("Goodbye.");
     return 0;
 }
