@@ -12,8 +12,10 @@
 | [04-DLL模块](04-DLL模块.md) | 热加载插件 (.dll / .so / .dylib) |
 | [05-任务系统](05-任务系统.md) | 分片、暂停、取消 |
 | [06-监控系统](06-监控系统.md) | MetricsCollector + shell_monitor |
-| [07-架构概览](07-架构概览.md) | v2.5 ShellEngine + ResultStore + Platform 层 |
+| [07-架构概览](07-架构概览.md) | ShellApp + ShellEngine + ResultStore + Platform 层 |
 | [08-测试指南](08-测试指南.md) | 测试编写与运行指南 |
 | [09-类图](09-类图.md) | 类图 — 依赖关系一目了然 |
 | [10-性能测试](10-性能测试.md) | 性能与极限 — 吞吐、延迟、调优 |
 | [11-AI辅助开发](11-AI辅助开发.md) | AI 辅助开发指南 |
+| [12-并发审计](12-并发审计.md) | 全框架并发代码审查结论 |
+| [13-UI对接](13-UI对接.md) | QML 前端接入指南（三扇门 + QObject 适配层） |

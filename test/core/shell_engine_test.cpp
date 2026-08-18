@@ -159,9 +159,13 @@ TEST_F(ShellEngineTest, InjectCommandProducesResult) {
 //  Test 3: 多条命令并发 — ResultStore 命中全部
 // ================================================================
 TEST_F(ShellEngineTest, MultipleCommandsAllComplete) {
-    ShellEngine engine(8, 4);
+    // 池子 >= N：SubmitTask 在池满时会丢弃命令（背压）。若池子 < N，
+    // 快速注入 N 条会偶发丢 1~2 条（got < N）。池子 >= N 保证全部入队。
+    ShellEngine engine(20, 4);
 
-    std::thread runner([&]() { engine.Run(); });
+    // ★ RunWithoutInput：不启 stdin 输入线程，避开「测试环境 stdin 是 EOF，
+    //   getline 立即返回把 running 设 false → 主循环提前退出」的竞态。
+    std::thread runner([&]() { engine.RunWithoutInput(); });
 
     constexpr int N = 20;
     for (int i = 0; i < N; ++i)
@@ -477,7 +481,10 @@ TEST_F(ShellEngineTest, MemoryStability_LongRun) {
 
 // Test 15: 测量吞吐量（命令/秒）
 TEST_F(ShellEngineTest, ThroughputBenchmark) {
-    ShellEngine engine(8, 4);
+    // 池子 >= BATCH：背压会丢命令，让 completed 不确定，吞吐统计还会被
+    // 等待循环的 sleep 时间污染（completed 到不了阈值 → 等满 → elapsed 虚高）。
+    // 池子够大则 BATCH 条全部入队，completed == BATCH，吞吐可稳定测量。
+    ShellEngine engine(200, 4);
 
     // 注册一个极快的模块
     auto& mgr = ModuleLifeManager::GetInstance();
@@ -495,7 +502,12 @@ TEST_F(ShellEngineTest, ThroughputBenchmark) {
     };
     mgr.AddModule(std::make_unique<FastMod>());
 
-    std::thread runner([&]() { engine.Run(); });
+    // ★ RunWithoutInput + result sink 统计真实完成数：
+    //   - 避开 stdin EOF 竞态（Run 会启输入线程，测试环境 stdin 是 EOF）
+    //   - 避开查 ResultStore 残留尾巴（结果早就被 DrainResults 消费了）
+    std::atomic<int> completed{0};
+    engine.SetResultSink([&completed](const ParmarPack&) { completed.fetch_add(1); });
+    std::thread runner([&]() { engine.RunWithoutInput(); });
 
     constexpr int BATCH = 200;
     auto t0 = std::chrono::steady_clock::now();
@@ -503,11 +515,9 @@ TEST_F(ShellEngineTest, ThroughputBenchmark) {
     for (int i = 0; i < BATCH; ++i)
         engine.InjectCommand("-m:SE_Fast -f:nop");
 
-    // 等待全部完成
-    for (int w = 0; w < 200 && engine.FreeTasks() < engine.TotalTasks(); ++w)
+    // 等全部完成（池子 >= BATCH，无背压丢命令，completed 会到 BATCH）
+    for (int w = 0; w < 400 && completed.load() < BATCH; ++w)
         std::this_thread::sleep_for(5ms);
-
-    std::this_thread::sleep_for(50ms);  // 等 ResultStore 落盘
 
     auto t1 = std::chrono::steady_clock::now();
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
@@ -515,17 +525,12 @@ TEST_F(ShellEngineTest, ThroughputBenchmark) {
     engine.InjectCommand("/exit");
     runner.join();
 
-    // 收集结果
-    int total = 0;
-    auto batch = ResultStore::Get().Drain();
-    total += static_cast<int>(batch.size());
+    double throughput = (elapsed_ms > 0) ? (completed.load() * 1000.0 / elapsed_ms) : 0;
 
-    double throughput = (elapsed_ms > 0) ? (total * 1000.0 / elapsed_ms) : 0;
-
-    std::cout << "[TEST] Throughput: " << total << " commands in "
+    std::cout << "[TEST] Throughput: " << completed.load() << " commands in "
               << elapsed_ms << "ms = " << throughput << " cmd/s\n";
 
-    EXPECT_GT(total, BATCH * 0.8) << "At least 80% of commands should succeed";
+    EXPECT_GT(completed.load(), BATCH * 0.8) << "At least 80% of commands should succeed";
     EXPECT_GT(throughput, 50.0) << "Throughput should exceed 50 cmd/s";
 
     mgr.UnloadModule("SE_Fast");
@@ -649,31 +654,28 @@ TEST_F(ShellEngineTest, Edge_ZeroWorkers) {
 TEST_F(ShellEngineTest, InputBacklog) {
     ShellEngine engine(4, 2);
 
-    std::thread runner([&]() { engine.Run(); });
+    // ★ RunWithoutInput + result sink 统计真实完成数（避开 stdin EOF + ResultStore 残留）
+    std::atomic<int> completed{0};
+    engine.SetResultSink([&completed](const ParmarPack&) { completed.fetch_add(1); });
+    std::thread runner([&]() { engine.RunWithoutInput(); });
 
     // 快速注入 100 个命令（不 sleep）
     for (int i = 0; i < 100; ++i)
         engine.InjectCommand("-m:SE_Test -f:echo -v:msg|bl_" + std::to_string(i));
 
-    // 等待所有处理完
+    // 等：有结果产出，且池子全归还（在途任务都跑完）
     for (int w = 0; w < 200; ++w) {
         std::this_thread::sleep_for(20ms);
-        if (engine.FreeTasks() == engine.TotalTasks())
+        if (completed.load() > 0 && engine.FreeTasks() == engine.TotalTasks())
             break;
     }
-    std::this_thread::sleep_for(100ms);
 
     engine.InjectCommand("/exit");
     runner.join();
 
-    // 收集结果
-    int total = 0;
-    auto batch = ResultStore::Get().Drain();
-    total += static_cast<int>(batch.size());
+    std::cout << "[TEST] InputBacklog: " << completed.load() << " results from 100 commands\n";
 
-    std::cout << "[TEST] InputBacklog: " << total << " results from 100 commands\n";
-
-    EXPECT_GT(total, 0) << "Some commands should complete";
+    EXPECT_GT(completed.load(), 0) << "Some commands should complete";
     EXPECT_EQ(engine.FreeTasks(), engine.TotalTasks());
 
     SUCCEED();

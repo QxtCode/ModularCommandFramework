@@ -21,7 +21,7 @@ cd out/build/debug
 ./test_runner --gtest_filter=ShellEngineTest.* --gtest_repeat=3
 ```
 
-## Test suite overview (373 tests, 47 suites)
+## Test suite overview (488 tests, 68 suites)
 
 | Suite | Count | What it tests |
 |-------|-------|---------------|
@@ -71,6 +71,18 @@ When EventBus signal accumulation is a concern, also remove known test signals i
 
 **DO** use an atomic counter in the test module:
 
+> **Sustained-load / stress tests use `RunWithoutInput()`**: in tests, `stdin` is EOF, so
+> `engine.Run()`'s input thread `getline` returns immediately and stops the engine —
+> delayed injections never get processed. Stress tests (like PeakStressTest) should call
+> `engine.RunWithoutInput()` (main loop only) and feed commands via `InjectCommand`.
+> Count completions with `SetResultSink` — don't drain `ResultStore` residue, which is a
+> random tail at shutdown, not the real completion count.
+
+> **When asserting "all N commands complete", size the pool ≥ N**: `SubmitTask` drops
+> commands when the pool is full (backpressure). If the pool < N, rapid injection of N
+> commands can occasionally drop 1–2, making `exec_count == N` assertions flaky. For
+> "all complete" assertions, size the pool to ≥ N; to only verify "some complete", assert `> 0`.
+
 ```cpp
 class TestMod : public ModuleBaseObject {
     std::atomic<int>* cnt_;
@@ -91,7 +103,7 @@ std::atomic<int> exec_count{0};
 mgr.AddModule(std::make_unique<TestMod>("MyMod", &exec_count));
 
 ShellEngine engine(4, 2);
-std::thread runner([&]() { engine.Run(); });
+std::thread runner([&]() { engine.RunWithoutInput(); });  // not Run(): stdin is EOF
 engine.InjectCommand("-m:MyMod -f:echo");
 
 // Wait for counter

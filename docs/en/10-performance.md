@@ -6,9 +6,9 @@
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| **Peak throughput** | ~23,000 cmd/s | Ramp-up injection, 16-slot pool, 8 workers |
-| **Bottleneck** | Main loop cycle (100ms cv timeout) | Each command needs 2 cycles: input→process + complete→drain |
-| **Theoretical max** | POOL_SIZE × 10 cycles/sec | With 16 slots: ~160 cmd/s per-client visible, higher internally |
+| **Peak throughput** | ~21,000 cmd/s | Fixed 5000-command full-speed injection, real completion count |
+| **Range** | 18,000 ~ 22,000 cmd/s | 10 runs, <2% variance (environment load) |
+| **Bottleneck** | ProcessInput serial submit + pool size | nop command <1μs; bottleneck in framework submit path |
 
 ### How throughput was measured
 
@@ -16,7 +16,10 @@
 ./test_runner --gtest_filter=PeakStressTest.RampUpThroughput
 ```
 
-Full-speed injection for 1 second, counting completed results in `ResultStore`.
+Fixed 5000-command full-speed injection. `completed` is counted via `SetResultSink`
+(a real completion signal), not by draining `ResultStore` residue. The old ~23,000
+figure counted `ResultStore` residue, which measured injection rate rather than
+real throughput.
 
 ## Sustained load
 

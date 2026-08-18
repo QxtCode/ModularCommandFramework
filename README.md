@@ -1,4 +1,4 @@
-# test_shell v2.6 — C++20 多线程命令框架
+# test_shell v2.7 — C++20 多线程命令框架
 
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)]()
 
@@ -143,6 +143,7 @@ while (running) {
 
 | 组件 | 文件 | 职责 |
 |------|------|------|
+| **ShellApp** | `core/ShellApp.h` | 应用组装器, CLI/UI 共用组装逻辑 |
 | **ShellEngine** | `core/ShellEngine.h` | 主循环引擎, v2.6 shared_ptr 共享状态 |
 | **ResultStore** | `core/ResultStore.h` | 单例结果仓库, O(1) swap 批量消费 |
 | **EventBus** | `eventbus/include/event_bus/event_bus.h` | DLL 单例 Signal/Slot, v2.6 快照式 Emit |
@@ -227,7 +228,7 @@ EXPORT_MODULE(MyModule)  // 自动生成 CreateModule / DestroyModule
 ### 测试规模
 
 ```
-385 tests / 48 suites
+488 tests / 68 suites
 ├── ShellEngine (20)     引擎启停/并发/关闭竞态
 ├── ConcurrencyStress (8) Emit阻塞/TOCTOU/ChaosMonkey
 ├── InputThread (13)     生产者消费者/背压/数据完整性
@@ -243,7 +244,7 @@ EXPORT_MODULE(MyModule)  // 自动生成 CreateModule / DestroyModule
 
 | 指标 | 值 |
 |------|-----|
-| 峰值吞吐 | **~22,400 cmd/s** |
+| 峰值吞吐 | **~21,000 cmd/s**（真实完成数统计）|
 | Burst 500 条 | **~2,230 cmd/s**, 99.6% 完成率 |
 | 持续 10s | 内存增量 **+200KB** |
 | 30 轮生命周期 | 内存增量 **+16KB** |
@@ -253,8 +254,9 @@ EXPORT_MODULE(MyModule)  // 自动生成 CreateModule / DestroyModule
 
 ```
 test_shell/
-├── main.cpp                 # 入口: 组装 → Run()
+├── main.cpp                 # 入口: ShellApp 组装 → Run()
 ├── core/                    # 内核
+│   ├── ShellApp.h           #   应用组装器（CLI/UI 共用）
 │   ├── ShellEngine.h        #   主循环引擎
 │   ├── ThreadPool.h         #   线程池
 │   ├── TasksPool.h          #   对象池
@@ -275,7 +277,7 @@ test_shell/
 ├── modules/                 # 内置模块
 ├── monitor/                 # shell_monitor (FTXUI)
 ├── test/                    # 测试 (385 cases)
-└── docs/                    # 文档 (11篇中英双语)
+└── docs/                    # 文档 (中英双语)
 ```
 
 ## 文档索引
@@ -292,6 +294,7 @@ test_shell/
 | [08-测试指南](docs/zh/08-测试指南.md) | 测试策略与模式 |
 | [10-性能测试](docs/zh/10-性能测试.md) | 性能基线与调优 |
 | [12-并发审计](docs/zh/12-并发审计.md) | 并发问题追踪 |
+| [13-UI对接](docs/zh/13-UI对接.md) | QML 前端接入指南 |
 
 ## License
 

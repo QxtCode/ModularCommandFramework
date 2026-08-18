@@ -23,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -84,7 +85,23 @@ public:
     // ================================================================
 
     /// 进入事件驱动主循环，阻塞直到 /exit 或 EOF。
+    ///
+    /// 若编译时定义了 SHELL_NO_STDIN（UI/AI 嵌入场景），则跳过输入线程，
+    /// 直接跑主循环 —— 命令全靠 InjectCommand 从外部喂。开发者不用改代码，
+    /// 只需在 CMake 里加 target_compile_definitions(... PRIVATE SHELL_NO_STDIN)。
     void Run();
+
+    /// UI: 不启动输入线程，只跑主循环 —— GUI/嵌入场景用。
+    /// QML 这类程序里 stdin 是 EOF，getline 会立刻返回把引擎停掉，
+    /// 所以 UI 场景只跑 MainLoop，全靠 InjectCommand 从外面喂命令。
+    void RunWithoutInput() { MainLoop(); }
+
+    /// UI: 结果出口钩子。设置了 sink 后，结果不再打印到 cout，而是
+    /// 交给回调（UI 用它把结果转给前端）。必须在 Run()/RunWithoutInput()
+    /// 启动前设置，避免线程竞争。
+    void SetResultSink(std::function<void(const ParmarPack&)> fn) {
+        result_sink_ = std::move(fn);
+    }
 
     /// 等待飞行中任务完成，停止输入线程。幂等，可多次调用。
     void Shutdown();
@@ -122,6 +139,9 @@ private:
     void StartInputThread();
     /// 批量消费 ResultStore → Formatter → LOG_PLAIN
     void DrainResults();
+    /// UI: 结果统一出口 —— 有 sink 走 sink，没 sink 走控制台。
+    /// DrainResults 和 Shutdown 的 idle-drain 共用它，保证两处行为一致。
+    void EmitResult(const ParmarPack& pack);
     /// 刷新共享内存指标（供 shell_monitor.exe 读取）
     void FlushMetrics();
     /// cv.wait_for — 阻塞直到有结果、输入或 shutdown
@@ -146,6 +166,7 @@ private:
     std::unique_ptr<TasksPool>           tasks_;
     std::unique_ptr<ThreadPool>          workers_;
     ITaskPersistence*                    store_{nullptr};  // v2.7: 可选持久化后端
+    std::function<void(const ParmarPack&)> result_sink_;   // UI: 结果出口（空 = 控制台）
 };
 
 // ================================================================
@@ -153,7 +174,9 @@ private:
 // ================================================================
 
 inline void ShellEngine::Run() {
+#ifndef SHELL_NO_STDIN
     StartInputThread();
+#endif
     MainLoop();
 }
 
@@ -188,7 +211,7 @@ inline void ShellEngine::Shutdown() {
             auto batch = ResultStore::Get().Drain();
             for (auto& item : batch) {
                 if (item->pack)
-                    LOG_PLAIN(fmt_->Format(*item->pack));
+                    EmitResult(*item->pack);
             }
         }
         // v2.5: 双重检查关闭竞态 — 任务可能在 Drain 和 GetFreeCount 之间完成
@@ -196,7 +219,7 @@ inline void ShellEngine::Shutdown() {
             auto final_batch = ResultStore::Get().Drain();
             for (auto& item : final_batch) {
                 if (item->pack)
-                    LOG_PLAIN(fmt_->Format(*item->pack));
+                    EmitResult(*item->pack);
             }
             break;
         }
@@ -258,8 +281,13 @@ inline void ShellEngine::DrainResults() {
     auto batch = ResultStore::Get().Drain();
     for (auto& item : batch) {
         if (item->pack)
-            LOG_PLAIN(fmt_->Format(*item->pack));
+            EmitResult(*item->pack);
     }
+}
+
+inline void ShellEngine::EmitResult(const ParmarPack& pack) {
+    if (result_sink_) result_sink_(pack);
+    else              LOG_PLAIN(fmt_->Format(pack));
 }
 
 inline void ShellEngine::FlushMetrics() {

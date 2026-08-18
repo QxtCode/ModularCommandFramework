@@ -1,4 +1,4 @@
-# test_shell v2.6 — C++20 Multithreaded Command Framework
+# test_shell v2.7 — C++20 Multithreaded Command Framework
 
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)]()
 
@@ -143,6 +143,7 @@ while (running) {
 
 | Component | File | Role |
 |-----------|------|------|
+| **ShellApp** | `core/ShellApp.h` | App assembler, CLI/UI shared assembly logic |
 | **ShellEngine** | `core/ShellEngine.h` | Main loop engine, v2.6 shared_ptr shared state |
 | **ResultStore** | `core/ResultStore.h` | Singleton result warehouse, O(1) swap batch consume |
 | **EventBus** | `eventbus/include/event_bus/event_bus.h` | DLL singleton Signal/Slot, v2.6 snapshot Emit |
@@ -227,7 +228,7 @@ EXPORT_MODULE(MyModule)  // auto-generates CreateModule / DestroyModule
 ### Test Scale
 
 ```
-385 tests / 48 suites
+488 tests / 68 suites
 ├── ShellEngine (20)       Start/stop, concurrency, shutdown races
 ├── ConcurrencyStress (8)  Emit blocking, TOCTOU, ChaosMonkey
 ├── InputThread (13)       Producer/consumer, backpressure, data integrity
@@ -243,7 +244,7 @@ EXPORT_MODULE(MyModule)  // auto-generates CreateModule / DestroyModule
 
 | Metric | Value |
 |--------|-------|
-| Peak throughput | **~22,400 cmd/s** |
+| Peak throughput | **~21,000 cmd/s** (real completion count) |
 | Burst 500 cmds | **~2,230 cmd/s**, 99.6% completion |
 | Sustained 10s | memory delta **+200 KB** |
 | 30 lifecycles | memory delta **+16 KB** |
@@ -253,8 +254,9 @@ EXPORT_MODULE(MyModule)  // auto-generates CreateModule / DestroyModule
 
 ```
 test_shell/
-├── main.cpp                 # Entry point: assemble → Run()
+├── main.cpp                 # Entry point: ShellApp assembles → Run()
 ├── core/                    # Kernel
+│   ├── ShellApp.h           #   App assembler (CLI/UI shared)
 │   ├── ShellEngine.h        #   Main loop engine
 │   ├── ThreadPool.h         #   Thread pool
 │   ├── TasksPool.h          #   Object pool
@@ -274,8 +276,8 @@ test_shell/
 │   └── ParmarPack.h         #   Parameter pack
 ├── modules/                 # Built-in modules
 ├── monitor/                 # shell_monitor (FTXUI)
-├── test/                    # Tests (385 cases)
-└── docs/                    # Documentation (11 bilingual articles)
+├── test/                    # Tests (488 cases)
+└── docs/                    # Documentation (bilingual)
 ```
 
 ## Documentation Index

@@ -69,7 +69,7 @@ endif()
 add_library(platform_utils STATIC
     ${PLATFORM_COMMON}
     ${PLATFORM_IMPL}
-)
+ )
 target_include_directories(platform_utils PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -82,7 +82,7 @@ add_executable(test_shell
     main.cpp
     core/Task.cpp
     parser/CommandParser.cpp
-)
+ )
 
 target_include_directories(test_shell PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
