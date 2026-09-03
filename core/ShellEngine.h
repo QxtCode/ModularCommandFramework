@@ -226,6 +226,7 @@ inline void ShellEngine::Shutdown() {
     }
 }
 
+
 inline void ShellEngine::InjectCommand(const std::string& line) {
     shared_->input_queue.Push(std::make_unique<std::string>(line));
     shared_->cv.notify_one();

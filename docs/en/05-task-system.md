@@ -88,14 +88,19 @@ resume command → store->Load(id) → pool.Acquire → task->Restore(rec)
 
 ### Wiring it in
 
+Assembly now lives in `ShellApp` (`core/ShellApp.h`); `main.cpp` is down to a few lines.
+The default backend is `MemPersistence`:
+
 ```cpp
-// main.cpp — declare the store BEFORE the engine (destruction order)
-auto taskStore = std::make_shared<MemPersistence>();
-ShellEngine engine(cfg.pool_size, cfg.workers);
-engine.SetTaskPersistence(taskStore.get());       // engine saves on pause
-mgr.AddModule(std::make_unique<TaskManagerModule>(
-    engine.GetPool(), engine.GetWorkers(), taskStore.get()));
+// core/ShellApp.h constructor (store_ declared before engine_ → destruction order)
+store_  = std::make_shared<MemPersistence>();
+engine_ = std::make_unique<ShellEngine>(cfg_.pool_size, cfg_.workers);
+engine_->SetTaskPersistence(store_.get());   // engine saves a snapshot on pause
+// ... SetupModules() registers TaskManagerModule(pool, workers, store_.get())
 ```
+
+To switch to a file backend, change `store_`'s type and constructor to
+`TaskFilePersistence` (see [15-开发手册](../zh/15-开发手册.md) §4.4).
 
 `SetTaskPersistence(nullptr)` (default) = pure in-memory, paused tasks are dropped —
 identical to v2.5 behavior.
@@ -125,7 +130,8 @@ Three hard requirements:
 Reference implementations:
 - `NullPersistence` — default, zero-overhead no-op.
 - `MemPersistence` — in-process map, lost on restart.
-- `FilePersistence` / `SqlitePersistence` — planned; implement to the rules above.
+- `TaskFilePersistence` — **implemented** (`core/TaskFilePersistence.h`). One file per task (`task_<id>.dat`), line format `key=value` (no raw newlines; `shards_json` is escaped). Internal `std::mutex` for thread safety; a private lock-free `LoadContent` avoids nested-lock deadlock in `LoadAll`/`GC`. Tested in `test/core/task_filepersistence_test.cpp`.
+- `SqlitePersistence` — planned; implement to the rules above.
 
 ### Delayed scheduling (ITaskScheduler, planned)
 

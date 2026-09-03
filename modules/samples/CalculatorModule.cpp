@@ -1,8 +1,6 @@
-/// CalculatorModule DLL 入口
-/// 包含模块头 + EXPORT_MODULE 宏 → 框架通过 LoadLibrary 加载
+/// CalculatorModule DLL 入口 —— 纯 SDK 模块（不链 eventbus）
+/// 一行 EXPORT_MODULE 生成 CreateModule / DestroyModule 导出，框架据此加载。
 
-#include "CalculatorModule.h"
-#include "core/ModuleLifeManager.h"  // EXPORT_MODULE 宏
+#include "CalculatorModule.h"   // 内含 sdk/sdk.h（含 EXPORT_MODULE）
 
-// 这一行就是 DLL 导出接口，框架用 CreateModule() / DestroyModule() 调用
 EXPORT_MODULE(CalculatorModule)

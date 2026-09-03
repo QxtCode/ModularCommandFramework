@@ -13,8 +13,9 @@ test_shell 支持在 **Windows、Linux、macOS** 上热加载共享库模块。
 ## 创建共享库模块
 
 ```cpp
-// CalcModule.h — 和普通模块一样
-class CalcModule : public ModuleBaseObject {
+// CalcModule.h — 和普通模块一样，只 include SDK 伞头
+#include "sdk/sdk.h"
+class CalcModule : public ModuleBase {
     const char* GetName() const override { return "Calculator"; }
     bool OnInit() override {
         REGISTER_FUNC("add", "a+b", { ... });
@@ -25,16 +26,15 @@ class CalcModule : public ModuleBaseObject {
 
 ```cpp
 // CalcModule.cpp — 一行宏，全平台通用
-#include "CalcModule.h"
-#include "core/ModuleLifeManager.h"
+#include "CalcModule.h"     // 内含 sdk/sdk.h（含 EXPORT_MODULE）
 EXPORT_MODULE(CalcModule)   // ← 生成 CreateModule/DestroyModule 导出
 ```
 
-`EXPORT_MODULE` 使用平台层的 `PLATFORM_EXPORT`——在 Windows 上展开为 `__declspec(dllexport)`，在 Linux/macOS 上展开为 `__attribute__((visibility("default")))`。
+`EXPORT_MODULE` 定义在 `sdk/Export.h`，自带导出宏（`TEST_SHELL_EXPORT`）——在 Windows 上展开为 `__declspec(dllexport)`，在 Linux/macOS 上展开为 `__attribute__((visibility("default")))`。零 core 依赖。
 
 ## 构建
 
-编译为共享库，链接 `eventbus`。将输出放入 `plugins/`。启动时框架自动扫描。
+编译为共享库，链接 `test_shell_sdk`（纯头文件，**不链 eventbus**）。将输出放入 `plugins/`。启动时框架自动扫描。
 
 ```bash
 # 示例：编译计算器模块
@@ -47,8 +47,8 @@ cmake --build --preset debug --target CalculatorModule
 // ModuleLifeManager::LoadDLLModule（简化）
 auto lib = platform::SharedLibrary::Load(path);  // LoadLibrary / dlopen
 auto create = lib->GetFunction<CreateFunc>("CreateModule");  // GetProcAddress / dlsym
-ModuleBaseObject* raw = create();
-AddModule(unique_ptr<ModuleBaseObject>(raw));
+ModuleBase* raw = create();
+AddModule(unique_ptr<ModuleBase>(raw));          // 宿主通过 ForEachFunc 自动接线
 dll_handles_[name] = std::move(lib);  // RAII: 析构时自动 FreeLibrary / dlclose
 ```
 

@@ -37,10 +37,12 @@
 
 #include "core/Config.h"
 #include "core/MemTaskStore.h"
+#include "core/TaskFilePersistence.h"
 #include "core/ModuleLifeManager.h"
 #include "core/ShellEngine.h"
 #include "core/platform/process.h"
 #include "modules/PrintModule.h"
+#include "modules/BatchModule.h"
 #include "modules/TaskManagerModule.h"
 #include "modules/logging/LogModule.h"
 
@@ -76,7 +78,7 @@ private:
     //   store_ 先声明 → 后析构 → 比 engine 活得久。
     //   ShellEngine 析构时 Shutdown 会 join Worker，Worker 收尾可能调用
     //   store_->Save()，所以 store 必须最后才销毁，否则悬空指针。
-    std::shared_ptr<MemPersistence> store_;
+    std::shared_ptr<TaskFilePersistence> store_;
     std::unique_ptr<ShellEngine>    engine_;
 };
 
@@ -90,11 +92,14 @@ inline ShellApp::ShellApp(int argc, char* argv[], Options opt)
     LoadConfig(argc, argv);
 
     if (!opt_.quiet) {
-        std::cout << "===== test_shell v2.7 =====" << std::endl << std::endl;
+        std::cout << "===== test_shell v2.8 =====" << std::endl << std::endl;
     }
 
     // 引擎组装：store 先建，engine 后建（析构顺序保证 store 活得久）。
-    store_  = std::make_shared<MemPersistence>();
+    // v2.8: 用 TaskFilePersistence 落盘到 exe 同目录的 task_store/，
+    // 支持暂停任务重启后 resume 从断点继续（MemPersistence 重启会丢）。
+    store_  = std::make_shared<TaskFilePersistence>(
+                  platform::Process::ExeDir() + "task_store");
     engine_ = std::make_unique<ShellEngine>(cfg_.pool_size, cfg_.workers);
     engine_->SetTaskPersistence(store_.get());
 
@@ -114,13 +119,14 @@ inline void ShellApp::SetupModules() {
     auto& bus = EventBus::GetInstance();
 
     mgr.AddModule(std::make_unique<PrintModule>());
+    mgr.AddModule(std::make_unique<BatchModule>());
     mgr.AddModule(std::make_unique<LogModule>());
     mgr.AddModule(std::make_unique<MetricsCollector>());
 
     // 应用配置中的日志级别（覆盖 log.conf 设置）
     LogFac::Instance().GetLogger().SetLevel(StringToLogLevel(cfg_.log_level));
 
-    LOG_INFO("test_shell v2.7 started");
+    LOG_INFO("test_shell v2.8 started");
 
     bus.RegisterSignal<uint32_t, bool, int, const char*, const char*>("task.result");
 

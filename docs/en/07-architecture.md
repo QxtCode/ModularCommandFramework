@@ -1,4 +1,4 @@
-# v2.7 Architecture — ShellEngine + ResultStore
+# Architecture — ShellEngine + ResultStore (v2.8)
 
 ## What changed from v2.4
 

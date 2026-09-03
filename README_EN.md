@@ -1,4 +1,4 @@
-# test_shell v2.7 — C++20 Multithreaded Command Framework
+# test_shell v2.8 — C++20 Multithreaded Command Framework
 
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)]()
 
@@ -228,13 +228,13 @@ EXPORT_MODULE(MyModule)  // auto-generates CreateModule / DestroyModule
 ### Test Scale
 
 ```
-488 tests / 68 suites
+507 tests / 72 test suites (measured 2026-09-03)
 ├── ShellEngine (20)       Start/stop, concurrency, shutdown races
 ├── ConcurrencyStress (8)  Emit blocking, TOCTOU, ChaosMonkey
 ├── InputThread (13)       Producer/consumer, backpressure, data integrity
 ├── DLLLifecycle (10)      Load/unload, concurrent execution, OnShutdown
 ├── PeakStressTest (6)     Throughput, burst, sustained, recovery
-├── Platform (83)          5 cross-platform test groups
+├── Platform (91)          5 cross-platform test groups
 ├── EventBus (26)          Signal/Slot, type safety, snapshot Emit
 ├── Task/ThreadPool (30)   Sharding, pause/resume, pooling
 └── ...
@@ -272,11 +272,11 @@ test_shell/
 │   └── src/event_bus_dll.cpp
 ├── parser/                  # Command parser
 ├── sdk/                     # Public API
-│   ├── IModule.h            #   Module base + LOG_PLAIN + REGISTER_FUNC
+│   ├── IModule.h            #   Module interface + LOG_PLAIN + REGISTER_FUNC
 │   └── ParmarPack.h         #   Parameter pack
 ├── modules/                 # Built-in modules
 ├── monitor/                 # shell_monitor (FTXUI)
-├── test/                    # Tests (488 cases)
+├── test/                    # Tests (507 cases)
 └── docs/                    # Documentation (bilingual)
 ```
 

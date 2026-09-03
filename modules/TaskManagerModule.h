@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 #include "core/ITaskPersistence.h"
-#include "core/ModuleBaseObject.h"
+#include "sdk/sdk.h"
 #include "core/Task.h"
 #include "core/TasksPool.h"
 #include "core/ThreadPool.h"
@@ -31,7 +31,7 @@
 #include "sdk/IModule.h"
 #include "sdk/ParmarPack.h"
 
-class TaskManagerModule : public ModuleBaseObject {
+class TaskManagerModule : public ModuleBase {
 public:
     /// @param pool       TasksPool 引用
     /// @param workers    ThreadPool 引用

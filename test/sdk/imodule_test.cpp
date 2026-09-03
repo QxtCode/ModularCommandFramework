@@ -14,11 +14,13 @@
 ///    6. Override Execute / Help
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // === ONLY SDK include ===
@@ -450,4 +452,65 @@ TEST(IModuleTest, ParmarPackErrorCodeValues)
     EXPECT_EQ(ErrorCode::INVALID_PARAMS, 400);
     EXPECT_EQ(ErrorCode::DLL_LOAD_FAILED, 501);
     EXPECT_EQ(ErrorCode::INTERNAL_ERROR, 500);
+}
+
+// ================================================================
+//  10. ForEachFunc — 命令表枚举（宿主侧接线用，SDK 自洽）
+// ================================================================
+
+TEST(IModuleTest, ForEachFuncEnumeratesRegisteredFunctions)
+{
+    class MyMod : public SDKTestModule {
+    public:
+        MyMod() : SDKTestModule("Enum") {}
+        bool OnInit() override {
+            REGISTER_FUNC("a", "Alpha", {});
+            REGISTER_FUNC("b", "Beta", {});
+            return true;
+        }
+    };
+    MyMod mod;
+    mod.OnInit();
+
+    std::vector<std::pair<std::string, std::string>> got;
+    mod.ForEachFunc([&](const std::string& id, const std::string& desc) {
+        got.emplace_back(id, desc);
+    });
+
+    ASSERT_EQ(got.size(), 2u);
+    // funcs_ 是 unordered_map，遍历顺序未定义 → 排序后再断言
+    std::sort(got.begin(), got.end());
+    EXPECT_EQ(got[0].first,  "a");
+    EXPECT_EQ(got[0].second, "Alpha");
+    EXPECT_EQ(got[1].first,  "b");
+    EXPECT_EQ(got[1].second, "Beta");
+}
+
+TEST(IModuleTest, ForEachFuncEmptyWhenNoFuncs)
+{
+    SDKTestModule mod;  // 未注册任何函数
+    int count = 0;
+    mod.ForEachFunc([&](const std::string&, const std::string&) { ++count; });
+    EXPECT_EQ(count, 0);
+}
+
+TEST(IModuleTest, ForEachFuncMatchesFuncCount)
+{
+    class MyMod : public SDKTestModule {
+    public:
+        MyMod() : SDKTestModule("Count") {}
+        bool OnInit() override {
+            REGISTER_FUNC("x", "X desc", {});
+            REGISTER_FUNC("y", "Y desc", {});
+            REGISTER_FUNC("z", "Z desc", {});
+            return true;
+        }
+    };
+    MyMod mod;
+    mod.OnInit();
+
+    int seen = 0;
+    mod.ForEachFunc([&](const std::string&, const std::string&) { ++seen; });
+    EXPECT_EQ(seen, static_cast<int>(mod.FuncCount()));
+    EXPECT_EQ(seen, 3);
 }

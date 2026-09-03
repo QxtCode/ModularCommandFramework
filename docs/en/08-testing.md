@@ -21,7 +21,7 @@ cd out/build/debug
 ./test_runner --gtest_filter=ShellEngineTest.* --gtest_repeat=3
 ```
 
-## Test suite overview (488 tests, 68 suites)
+## Test suite overview (507 tests, 72 test suites; measured 2026-09-03)
 
 | Suite | Count | What it tests |
 |-------|-------|---------------|

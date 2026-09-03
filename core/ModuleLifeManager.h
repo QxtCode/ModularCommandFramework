@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include "ModuleBaseObject.h"
 #include "ParmarPack.h"
+#include "sdk/Export.h"   // TestShellSdkApiVersion() — DLL 版本校验
 #include "core/platform/platform.h"
 #include "core/platform/file_system.h"
 #include "core/platform/shared_library.h"
@@ -47,7 +48,7 @@ public:
     /// v2.4: unique_lock held for the entire operation — no TOCTOU.
     /// Module is converted to shared_ptr so EventBus slots can use
     /// weak_ptr lifetime checking.
-    bool AddModule(std::unique_ptr<ModuleBaseObject> module)
+    bool AddModule(std::unique_ptr<ModuleBase> module)
     {
         if (!module) return false;
 
@@ -61,7 +62,7 @@ public:
         }
 
         // ---- Convert to shared_ptr for weak_ptr lifetime tracking ----
-        auto shared_mod = std::shared_ptr<ModuleBaseObject>(std::move(module));
+        auto shared_mod = std::shared_ptr<ModuleBase>(std::move(module));
 
         // ---- unique_lock for the entire check+insert (no TOCTOU) ----
         std::unique_lock wr_lock(mutex_);
@@ -73,7 +74,16 @@ public:
         }
 
         // ---- Connect to EventBus with shared_ptr (weak_ref protection) ----
-        shared_mod->ConnectToEventBus(shared_mod);
+        // ---- host-side wiring (v2.8): enumerate commands → register signals ----
+        // 接线从模块侧（ConnectToEventBus）反转到宿主侧，用 ForEachFunc 枚举命令表。
+        // Slot 仍通过 shared_ptr/weak_ptr 保活，热卸载安全语义不变。
+        auto& bus = EventBus::GetInstance();
+        shared_mod->ForEachFunc([&](const std::string& id, const std::string&) {
+            std::string sig = std::string(name) + "." + id;
+            bus.RegisterSignal<ParmarPack*>(sig);
+            bus.LinkSlotFunc<ParmarPack*>(sig, shared_mod,
+                [raw = shared_mod.get()](ParmarPack* p) { raw->Execute(p); });
+        });
 
         std::cout << "[ModuleMgr] Module loaded: " << name
                   << " v" << shared_mod->GetVersion() << "\n";
@@ -81,7 +91,6 @@ public:
                  " v" + std::to_string(shared_mod->GetVersion()));
 
         // ---- Auto-register "help" signal ----
-        auto& bus = EventBus::GetInstance();
         std::string help_sig = std::string(name) + ".help";
         bus.RegisterSignal<ParmarPack*>(help_sig);
         bus.LinkSlotFunc<ParmarPack*>(help_sig, shared_mod,
@@ -148,7 +157,7 @@ public:
         return module_map_.size();
     }
 
-    ModuleBaseObject* GetModule(const std::string& name)
+    ModuleBase* GetModule(const std::string& name)
     {
         std::shared_lock lock(mutex_);
         auto it = module_map_.find(name);
@@ -201,8 +210,8 @@ public:
     // ============================================================
     //  DLL hot-load
     // ============================================================
-    using CreateFunc  = ModuleBaseObject* (*)();
-    using DestroyFunc = void (*)(ModuleBaseObject*);
+    using CreateFunc  = ModuleBase* (*)();
+    using DestroyFunc = void (*)(ModuleBase*);
 
     bool LoadDLLModule(const std::string& dll_path)
     {
@@ -214,6 +223,44 @@ public:
             return false;
         }
 
+        // ============================================================
+        //  ★ SDK API 版本校验（v2.8 引入）
+        // ============================================================
+        //  查 GetSdkApiVersion 符号 → 无符号 = 旧 DLL（改宏之前编译）→
+        //  拒绝，防止内存布局不匹配崩溃。有符号则比对：严格匹配
+        //  （主+次都相等），不匹配拒绝并报双方版本。
+        {
+            using GetVerFunc = unsigned(*)();
+            auto get_ver = lib->GetFunction<GetVerFunc>("GetSdkApiVersion");
+            if (!get_ver)
+            {
+                std::cerr << "[ModuleMgr] " << dll_path
+                          << ": missing GetSdkApiVersion — recompile against"
+                          << " current SDK (v" << TEST_SHELL_SDK_API_MAJOR
+                          << "." << TEST_SHELL_SDK_API_MINOR << ")\n";
+                LOG_ERROR(std::string("Module SDK version missing: ") + dll_path);
+                return false;  // lib destructor closes handle
+            }
+
+            unsigned dll_ver = get_ver();
+            unsigned host_ver = TestShellSdkApiVersion();
+            if (dll_ver != host_ver)
+            {
+                unsigned dmaj = dll_ver >> 16, dmin = dll_ver & 0xFFFF;
+                unsigned hmaj = host_ver >> 16, hmin = host_ver & 0xFFFF;
+                std::cerr << "[ModuleMgr] " << dll_path
+                          << ": SDK API version mismatch (dll "
+                          << dmaj << "." << dmin
+                          << ", host " << hmaj << "." << hmin << ")\n";
+                LOG_ERROR(std::string("Module SDK version mismatch: ")
+                          + dll_path + " (dll " + std::to_string(dmaj) + "."
+                          + std::to_string(dmin) + ", host "
+                          + std::to_string(hmaj) + "."
+                          + std::to_string(hmin) + ")");
+                return false;  // lib destructor closes handle
+            }
+        }
+
         auto create = lib->GetFunction<CreateFunc>("CreateModule");
         if (!create)
         {
@@ -221,7 +268,7 @@ public:
             return false;  // lib destructor closes handle
         }
 
-        ModuleBaseObject* raw = create();
+        ModuleBase* raw = create();
         if (!raw)
         {
             std::cerr << "[ModuleMgr] CreateModule() returned null.\n";
@@ -229,7 +276,7 @@ public:
         }
 
         // Wrap in unique_ptr → AddModule converts to shared_ptr
-        bool ok = AddModule(std::unique_ptr<ModuleBaseObject>(raw));
+        bool ok = AddModule(std::unique_ptr<ModuleBase>(raw));
         if (ok)
         {
             dll_handles_[raw->GetName()] = std::move(lib);
@@ -264,31 +311,25 @@ public:
     ModuleLifeManager(ModuleLifeManager&&) = delete;
     ModuleLifeManager& operator=(ModuleLifeManager&&) = delete;
 
+    // ============================================================
+    //  析构顺序（关键，v2.8 修复 /exit 段错误）
+    // ============================================================
+    //  必须「先销毁模块对象，再释放 DLL 句柄」。
+    //   模块（如 CalculatorModule）的析构代码 / vtable 位于它自己的 DLL 里，
+    //   若先 FreeLibrary 再 delete，会跳进已卸载的代码 → 段错误。
+    //   成员声明顺序（module_map_ 在前、dll_handles_ 在后）会让默认析构
+    //   按相反顺序先析构 dll_handles_，所以这里显式先 clear 模块再 clear 句柄。
+    ~ModuleLifeManager()
+    {
+        module_map_.clear();   // ① 先 delete 模块（DLL 仍加载，安全）
+        dll_handles_.clear();  // ② 再 FreeLibrary（模块已销毁）
+    }
+
 private:
     ModuleLifeManager() = default;
 
     // v2.4: shared_ptr so EventBus slots can hold weak_ptr for lifetime checks
-    std::unordered_map<std::string, std::shared_ptr<ModuleBaseObject>> module_map_;
+    std::unordered_map<std::string, std::shared_ptr<ModuleBase>> module_map_;
     std::unordered_map<std::string, std::unique_ptr<platform::SharedLibrary>> dll_handles_;
     mutable std::shared_mutex mutex_;
 };
-
-// =================================================================
-//  EXPORT_MODULE macro — DLL export interface
-// =================================================================
-//
-//  Usage: put EXPORT_MODULE(YourClass) at the end of your module .cpp
-//
-//  CreateModule() is called by LoadDLLModule to instantiate the module.
-//  DestroyModule() is DEPRECATED in v2.4 — modules are now managed by
-//  shared_ptr, which calls the default deleter (delete). Calling
-//  DestroyModule on a shared_ptr-managed module would double-delete.
-//  It is kept for backward compatibility with external users who may
-//  manage module lifetime manually.
-#define EXPORT_MODULE(ClassName)                                         \
-    extern "C" PLATFORM_EXPORT ModuleBaseObject* CreateModule() {        \
-        return new ClassName();                                          \
-    }                                                                    \
-    extern "C" PLATFORM_EXPORT void DestroyModule(ModuleBaseObject* m) { \
-        if (m) { m->OnShutdown(); delete m; } /* DEPRECATED in v2.4 */   \
-    }

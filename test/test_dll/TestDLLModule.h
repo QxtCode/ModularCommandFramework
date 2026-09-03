@@ -1,7 +1,6 @@
 /// Test DLL module — 用来测试 DLL 加载/卸载/执行/生命周期
 #pragma once
-#include "core/ModuleBaseObject.h"
-#include "event_bus/event_bus.h"
+#include "sdk/sdk.h"
 #include <atomic>
 #include <cstdlib>
 #include <iostream>
@@ -12,7 +11,7 @@ extern std::atomic<int> g_test_dll_shutdown_count;
 extern std::atomic<int> g_test_dll_exec_count;
 extern bool g_test_dll_oninit_result;  // OnInit 返回此值（可通过 export 函数或环境变量控制）
 
-class TestDLLModule : public ModuleBaseObject
+class TestDLLModule : public ModuleBase
 {
 public:
     const char* GetName() const override { return "TestDLL"; }
@@ -50,6 +49,6 @@ public:
     void Execute(ParmarPack* pack) override
     {
         g_test_dll_exec_count.fetch_add(1);
-        ModuleBaseObject::Execute(pack);
+        ModuleBase::Execute(pack);
     }
 };

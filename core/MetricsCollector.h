@@ -21,22 +21,19 @@
 #include <string>
 #include <thread>
 
-#include "core/ModuleBaseObject.h"
+#include "sdk/sdk.h"
 #include "core/platform/platform.h"
 #include "core/platform/file_system.h"
 #include "core/platform/process.h"
 #include "core/platform/shared_memory.h"
 #include "monitor/MetricsProtocol.h"
 
-class MetricsCollector : public ModuleBaseObject
+class MetricsCollector : public ModuleBase
 {
 public:
     const char* GetName() const override { return "MetricsCollector"; }
 
-    ~MetricsCollector() override {
-        StopTimer();
-        // shm_ destructor handles cleanup; OnShutdown() already set magic=0
-    }
+    ~MetricsCollector() override { Cleanup(); }
 
     bool OnInit() override
     {
@@ -73,7 +70,7 @@ public:
             }
             char buf[1024];
             snprintf(buf, sizeof(buf),
-                "=== test_shell v2.7 Dashboard ===\n"
+                "=== test_shell v2.8 Dashboard ===\n"
                 "  CPU:     %u.%02u%%\n"
                 "  Memory:  %llu KB\n"
                 "  Threads: %u workers / %u total\n"
@@ -137,14 +134,7 @@ public:
         return true;
     }
 
-    void OnShutdown() override {
-        StopTimer();
-        if (shm_data_) {
-            shm_data_->magic = 0;
-            shm_data_ = nullptr;  // prevent dangling pointer access in dtor
-        }
-        shm_.reset();
-    }
+    void OnShutdown() override { Cleanup(); }
 
     /// Expose shared memory pointer for direct read by external code (tests)
     monitor::MetricsData* GetMetrics() const { return shm_data_; }
@@ -229,61 +219,24 @@ public:
     }
 
 private:
-    void StopTimer() {
-        running_.store(false);
-        if (timer_.joinable()) timer_.join();
-    }
-
-    void TimerLoop()
+    // ============================================================
+    //  Cleanup — 析构函数与 OnShutdown 共用，保证「任何死法都自清洁」
+    // ============================================================
+    //  v2.8: 写 magic=0（通知外部 shell_monitor 本模块已下线）+ 释放
+    //  共享内存。之前这段只在 OnShutdown 里，进程退出时 ModuleLifeManager
+    //  只 delete、不调 OnShutdown，导致 magic 残留 kMagic（外部误判框架仍存活）。
+    void Cleanup()
     {
-        if (!shm_data_) return;
-        using namespace std::chrono;
-        auto t0 = steady_clock::now();
-        uint64_t last_cpu = platform::Process::CpuTimeUs();
-        uint32_t c = 0;
-        while (running_.load())
-        {
-            std::this_thread::sleep_for(milliseconds(500));
-            if (!running_.load() || !shm_data_) break;
-            auto now = steady_clock::now();
-            c++;
-            monitor::BeginWrite(shm_data_);
-            // CPU via platform::Process
-            uint64_t cur_cpu = platform::Process::CpuTimeUs();
-            uint32_t cpu = 0;
-            if (last_cpu) {
-                uint64_t delta_us = cur_cpu - last_cpu;
-                // Original formula: delta_100ns / 50000
-                // delta_us = delta_100ns / 10, so: delta_us / 5000
-                cpu = static_cast<uint32_t>(delta_us / 5000);
-            }
-            last_cpu = cur_cpu;
-
-            shm_data_->uptime_ms       = duration_cast<milliseconds>(now - t0).count();
-            shm_data_->cpu_percent     = cpu;
-            shm_data_->working_set_kb  = 0;
-            shm_data_->thread_count    = static_cast<uint32_t>(std::thread::hardware_concurrency());
-            shm_data_->worker_threads  = worker_threads_;
-            shm_data_->stuck_threads   = stuck_threads_;
-            shm_data_->tasks_active    = tasks_active_;
-            shm_data_->tasks_queued    = tasks_queued_;
-            shm_data_->tasks_total     = tasks_total_;
-            shm_data_->tasks_completed = c;
-            shm_data_->modules_loaded  = modules_loaded_;
-            shm_data_->signals_count   = signals_count_;
-            shm_data_->dll_handles     = 0;
-            shm_data_->zombie_signals  = 0;
-            shm_data_->last_error[0]   = '\0';
-            shm_data_->top_module[0]   = '\0';
-            monitor::EndWrite(shm_data_);
+        if (shm_data_) {
+            shm_data_->magic = 0;
+            shm_data_ = nullptr;  // 防悬空：释放后不再通过裸指针访问
         }
+        shm_.reset();
     }
 
     std::unique_ptr<platform::SharedMemory> shm_;
     monitor::MetricsData* shm_data_ = nullptr;
 
-    std::thread timer_;
-    std::atomic<bool> running_{false};
     uint64_t start_ms_      = 0;
     uint64_t last_cpu_us_   = 0;  // v2.7: CPU 差量采样前值
     uint64_t last_flush_ms_ = 0;  // v2.7: 上次 Flush 时间戳

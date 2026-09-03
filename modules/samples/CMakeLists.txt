@@ -5,12 +5,8 @@ add_library(CalculatorModule SHARED
     CalculatorModule.cpp
 )
 
-target_include_directories(CalculatorModule PRIVATE
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/core
-)
-
-target_link_libraries(CalculatorModule PRIVATE eventbus)
+# 纯 SDK 模块：只链 test_shell_sdk（纯头文件，不链 eventbus）
+target_link_libraries(CalculatorModule PRIVATE test_shell_sdk)
 
 target_compile_features(CalculatorModule PUBLIC cxx_std_20)
 

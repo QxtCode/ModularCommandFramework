@@ -295,3 +295,39 @@ TEST(MonitorIntegration, MetricsDuringChaos)
     mgr.UnloadModule("CM");
     mgr.UnloadModule("MetricsCollector");
 }
+
+// ================================================================
+//  Test 6: destructor self-cleans (magic=0) — 不依赖 OnShutdown
+// ================================================================
+//  v2.8 修复验证：MetricsCollector 的析构必须自己写 magic=0 并释放
+//  共享内存，不能依赖框架调 OnShutdown。进程退出时 ModuleLifeManager
+//  只 delete 模块、不调 OnShutdown；若析构不清理，magic 残留 kMagic，
+//  外部 shell_monitor 会误判框架仍存活。
+//
+//  本测试是「隔离测试」：直接构造局部 MetricsCollector，不经过
+//  ModuleLifeManager 单例，也不碰 ShellEngine。
+TEST(MonitorIntegration, MetricsCollectorDestructorSelfCleans)
+{
+    std::unique_ptr<platform::SharedMemory> probe;
+
+    {
+        MetricsCollector mc;
+        ASSERT_TRUE(mc.OnInit());
+
+        auto* shm = mc.GetMetrics();
+        ASSERT_NE(shm, nullptr);
+        ASSERT_EQ(shm->magic, monitor::kMagic);
+
+        // 在对象析构前，用第二个句柄打开同一块命名共享内存；
+        // owner 释放后映射仍存活，供我们读回 magic 验证清理是否发生。
+        probe = platform::SharedMemory::Open(monitor::kShmName, 4096);
+        ASSERT_NE(probe, nullptr);
+        ASSERT_NE(probe->Data(), nullptr);
+    }
+    // mc 已析构（从未调用 OnShutdown）—— magic 必须被析构函数清零。
+
+    auto* data = static_cast<monitor::MetricsData*>(probe->Data());
+    ASSERT_NE(data, nullptr);
+    EXPECT_EQ(data->magic, 0u)
+        << "析构函数应写 magic=0，否则外部 reader 会误判框架仍存活";
+}

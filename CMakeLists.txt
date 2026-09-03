@@ -1,5 +1,5 @@
 # =================================================================
-#  test_shell v2.7 — 跨平台 C++20 命令框架
+#  test_shell v2.8 — 跨平台 C++20 命令框架
 # =================================================================
 #  构建: cmake --preset debug
 #        cmake --build --preset debug
@@ -10,7 +10,7 @@
 
 cmake_minimum_required(VERSION 3.16)
 project(test_shell
-    VERSION 2.7.0
+    VERSION 2.8.0
     DESCRIPTION "C++20 跨平台命令框架 — Signal/Slot + Task Shard + 平台抽象层"
     LANGUAGES CXX
 )
@@ -37,6 +37,18 @@ find_package(Threads REQUIRED)
 # ============================================
 add_subdirectory(eventbus)
 add_subdirectory(monitor)
+
+# ============================================
+#  test_shell_sdk — 纯头文件 SDK（INTERFACE 库）
+#  模块作者只需链接它，无需 eventbus / core。
+#  EXPORT_MODULE 已在 sdk/Export.h 中，自包含零 core 依赖。
+# ============================================
+add_library(test_shell_sdk INTERFACE)
+target_include_directories(test_shell_sdk INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}          # 使 "sdk/..." 可被 include
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk      # 使 "sdk.h" 等可直接 include
+)
+target_compile_features(test_shell_sdk INTERFACE cxx_std_20)
 
 # ============================================
 #  示例插件（演示动态加载）
@@ -69,7 +81,7 @@ endif()
 add_library(platform_utils STATIC
     ${PLATFORM_COMMON}
     ${PLATFORM_IMPL}
- )
+  "core/TaskFilePersistence.h")
 target_include_directories(platform_utils PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -82,7 +94,7 @@ add_executable(test_shell
     main.cpp
     core/Task.cpp
     parser/CommandParser.cpp
- )
+  "core/TaskFilePersistence.h")
 
 target_include_directories(test_shell PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

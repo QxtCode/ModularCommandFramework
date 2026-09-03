@@ -36,7 +36,7 @@
 #include <string>
 #include <thread>
 
-#include "core/ModuleBaseObject.h"
+#include "sdk/sdk.h"
 #include "event_bus/event_bus.h"
 
 // =================================================================
@@ -345,7 +345,7 @@ private:
 // =================================================================
 //  LogModule — 命令接口（REGISTER_FUNC 注册到 EventBus）
 // =================================================================
-class LogModule : public ModuleBaseObject
+class LogModule : public ModuleBase
 {
 public:
     const char* GetName() const override { return "Logger"; }

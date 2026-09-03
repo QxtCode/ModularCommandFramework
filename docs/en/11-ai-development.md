@@ -32,7 +32,8 @@ The AI will read the current code, compare with existing memory, and update or c
 
 ```
 Add a new module called NetworkModule with functions: -f:connect, -f:send, -f:receive.
-Follow the pattern in modules/PrintModule.h. Register it in main.cpp.
+Follow the pattern in modules/PrintModule.h (extend ModuleBase, include sdk/sdk.h).
+Register it in core/ShellApp.h's SetupModules() (not main.cpp).
 Write tests following the atomic counter pattern in test-strategy.md.
 ```
 

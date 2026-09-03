@@ -1,4 +1,4 @@
-# test_shell v2.7 文档
+# test_shell v2.8 文档
 
 > **跨平台**: Windows · Linux · macOS &emsp; | &emsp; 构建: `cmake --preset debug`
 
@@ -19,3 +19,5 @@
 | [11-AI辅助开发](11-AI辅助开发.md) | AI 辅助开发指南 |
 | [12-并发审计](12-并发审计.md) | 全框架并发代码审查结论 |
 | [13-UI对接](13-UI对接.md) | QML 前端接入指南（三扇门 + QObject 适配层） |
+| [14-SDK原理](14-SDK原理.md) | SDK 拆分原理（WHAT/HOW 分离、接线反转） |
+| [15-开发手册](15-开发手册.md) | 面向自学者的开发手册（能力分级 + 存储/延迟接口 + 开发原则） |

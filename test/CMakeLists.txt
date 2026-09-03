@@ -37,6 +37,7 @@ add_executable(test_runner
     core/task_test.cpp
     core/tasks_pool_test.cpp
     core/module_life_manager_test.cpp
+    core/sdk_module_wiring_test.cpp
     core/dll_module_test.cpp
     parser/command_parser_test.cpp
     parser/console_parser_test.cpp
@@ -66,12 +67,15 @@ add_executable(test_runner
     core/task_store_test.cpp
     core/task_snapshot_test.cpp
     sdk/imodule_test.cpp
+    sdk/module_base_test.cpp
     core/platform_file_system_test.cpp
     core/platform_shared_library_test.cpp
     core/platform_shared_memory_test.cpp
     core/platform_process_test.cpp
     core/platform_boundary_test.cpp
-)
+    core/task_persistence_perf_test.cpp
+    core/batch_module_test.cpp
+  "core/task_filepersistence_test.cpp")
 
 target_include_directories(test_runner PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..

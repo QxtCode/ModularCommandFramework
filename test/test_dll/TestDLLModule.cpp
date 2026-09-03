@@ -1,7 +1,7 @@
 /// Test DLL — 导出 TestDLLModule + 计数器访问器
 #include "TestDLLModule.h"
-#include "core/ModuleLifeManager.h"
-#include "core/platform/platform.h"
+#include "sdk/Export.h"            // EXPORT_MODULE
+#include "core/platform/platform.h" // PLATFORM_EXPORT（计数器访问器用）
 
 // ---- 全局计数器 ----
 std::atomic<int> g_test_dll_init_count{0};

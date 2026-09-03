@@ -150,7 +150,13 @@ protected:
         // 注册 LogModule（OnInit 注册 info/error/debug/fatal/setlevel + log.written）
         log_mod = std::make_shared<LogModule>();
         log_mod->OnInit();
-        log_mod->ConnectToEventBus(log_mod);  // v2.4: shared_ptr for weak-ref protection
+        // v2.8: 宿主侧接线（等价 AddModule 内部的 ForEachFunc 接线，替代旧 ConnectToEventBus）
+        log_mod->ForEachFunc([&](const std::string& id, const std::string&) {
+            std::string sig = std::string("Logger") + "." + id;
+            bus->RegisterSignal<ParmarPack*>(sig);
+            bus->LinkSlotFunc<ParmarPack*>(sig, log_mod,
+                [raw = log_mod.get()](ParmarPack* p) { raw->Execute(p); });
+        });
 
         // 手动注册 "Logger.help"（正常流程由 AddModule 自动注册，这里模拟）
         bus->RegisterSignal<ParmarPack*>("Logger.help");

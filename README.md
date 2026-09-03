@@ -1,4 +1,4 @@
-# test_shell v2.7 — C++20 多线程命令框架
+# test_shell v2.8 — C++20 多线程命令框架
 
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)]()
 
@@ -182,7 +182,9 @@ core/platform/
 ### 内置模块示例
 
 ```cpp
-class PrintModule : public ModuleBaseObject {
+#include "sdk/sdk.h"            // 一个 include 到位，不链 eventbus
+
+class PrintModule : public ModuleBase {   // 继承 ModuleBase（不是 ModuleBaseObject）
 public:
     const char* GetName() const override { return "PrintModule"; }
 
@@ -196,11 +198,15 @@ public:
 };
 ```
 
+> v2.8：模块基类从 `ModuleBaseObject`（core）迁移到 `ModuleBase`（sdk/），接线从模块侧
+> `ConnectToEventBus` 反转到宿主侧 `ForEachFunc`。模块对 EventBus 一无所知，只链
+> `test_shell_sdk`。详见 [14-SDK原理](docs/zh/14-SDK原理.md)。
+
 ### DLL 插件
 
 ```cpp
 // my_module.cpp
-class MyModule : public ModuleBaseObject { ... };
+class MyModule : public ModuleBase { ... };
 EXPORT_MODULE(MyModule)  // 自动生成 CreateModule / DestroyModule
 ```
 
@@ -228,27 +234,31 @@ EXPORT_MODULE(MyModule)  // 自动生成 CreateModule / DestroyModule
 ### 测试规模
 
 ```
-488 tests / 68 suites
+507 tests / 72 个测试套件（2026-09-03 实测）
 ├── ShellEngine (20)     引擎启停/并发/关闭竞态
 ├── ConcurrencyStress (8) Emit阻塞/TOCTOU/ChaosMonkey
 ├── InputThread (13)     生产者消费者/背压/数据完整性
 ├── DLLLifecycle (10)    加载卸载/并发执行/OnShutdown
 ├── PeakStressTest (6)   吞吐/爆发/持续/恢复
-├── Platform (83)        跨平台 5 组专项
+├── Platform (91)        跨平台 5 组专项
 ├── EventBus (26)        Signal/Slot/类型安全
 ├── Task/ThreadPool (30) 分片/暂停/池化
 └── ...
 ```
 
-### 性能基线 (i7-13700H, Debug)
+### 性能基线 (i7-13700H)
 
-| 指标 | 值 |
-|------|-----|
-| 峰值吞吐 | **~21,000 cmd/s**（真实完成数统计）|
-| Burst 500 条 | **~2,230 cmd/s**, 99.6% 完成率 |
-| 持续 10s | 内存增量 **+200KB** |
-| 30 轮生命周期 | 内存增量 **+16KB** |
-| 过载恢复 | **~108ms** |
+| 指标 | 值 | 编译 |
+|------|-----|------|
+| **稳态吞吐** | **~100,000 cmd/s**（最佳 10.6 万）| **Release /O2** |
+| 峰值吞吐 | ~21,000 cmd/s（真实完成数统计）| Debug |
+| Burst 500 条 | ~2,230 cmd/s, 99.6% 完成率 | Debug |
+| 持续 10s | 内存增量 +200KB | Debug |
+| 30 轮生命周期 | 内存增量 +16KB | Debug |
+| 过载恢复 | ~108ms | Debug |
+
+> Release ~10 万 cmd/s 是框架真实水平（N≥20000，池空闲判据，stdout 重定向）；
+> Debug ~2.1 万未优化，仅供开发期参考。详见 [10-性能测试](docs/zh/10-性能测试.md)。
 
 ## 目录结构
 
@@ -261,7 +271,12 @@ test_shell/
 │   ├── ThreadPool.h         #   线程池
 │   ├── TasksPool.h          #   对象池
 │   ├── ResultStore.h        #   结果仓库
-│   ├── ModuleLifeManager.h  #   模块生命周期
+│   ├── ModuleLifeManager.h  #   模块生命周期（v2.8 宿主侧 ForEachFunc 接线）
+│   ├── ModuleBaseObject.h   #   兼容基类（+ConnectToEventBus 测试后门）
+│   ├── Task.h / Task.cpp    #   分片任务 + ExportRecord/Restore 快照
+│   ├── ITaskPersistence.h   #   持久化接口
+│   ├── MemTaskStore.h       #   MemPersistence / MemScheduler 内存实现
+│   ├── TaskFilePersistence.h#   文件持久化后端（每任务一个 .dat）
 │   ├── Config.h             #   配置系统
 │   └── platform/            #   跨平台抽象层
 ├── eventbus/                # EventBus 共享库 (DLL)
@@ -271,12 +286,19 @@ test_shell/
 │   │   └── slot.h           #   weak_ptr 保护的槽
 │   └── src/event_bus_dll.cpp
 ├── parser/                  # 命令解析器
-├── sdk/                     # 公开 API
-│   ├── IModule.h            #   模块基类 + LOG_PLAIN + REGISTER_FUNC
-│   └── ParmarPack.h         #   参数包
+├── sdk/                     # 公开 API（纯头文件 INTERFACE 库，不链 eventbus）
+│   ├── IModule.h            #   模块接口基类 + LOG_PLAIN + REGISTER_FUNC + ForEachFunc
+│   ├── ModuleBase.h         #   SDK 基类（+SetResult/SetError 收尾助手，开发者继承它）
+│   ├── ParmarPack.h         #   参数包 + ToJson/FromJson 序列化
+│   ├── Export.h             #   EXPORT_MODULE 宏（自带 TEST_SHELL_EXPORT，零 core 依赖）
+│   └── sdk.h                #   伞头（一个 include 到位）
 ├── modules/                 # 内置模块
+│   ├── PrintModule.h        #   演示模块（单分片）
+│   ├── BatchModule.h        #   批量文件处理（多分片 + 可暂停 + 可落盘恢复，v2.8）
+│   ├── TaskManagerModule.h  #   任务暂停/恢复/列表
+│   └── logging/LogModule.h  #   日志模块
 ├── monitor/                 # shell_monitor (FTXUI)
-├── test/                    # 测试 (385 cases)
+├── test/                    # 测试 (507 cases)
 └── docs/                    # 文档 (中英双语)
 ```
 
@@ -295,6 +317,8 @@ test_shell/
 | [10-性能测试](docs/zh/10-性能测试.md) | 性能基线与调优 |
 | [12-并发审计](docs/zh/12-并发审计.md) | 并发问题追踪 |
 | [13-UI对接](docs/zh/13-UI对接.md) | QML 前端接入指南 |
+| [14-SDK原理](docs/zh/14-SDK原理.md) | SDK 拆分原理（WHAT/HOW 分离、接线反转） |
+| [15-开发手册](docs/zh/15-开发手册.md) | 面向自学者的开发手册（能力分级 + 存储/延迟接口） |
 
 ## License
 

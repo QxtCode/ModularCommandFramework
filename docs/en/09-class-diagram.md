@@ -1,4 +1,4 @@
-# Class Diagram — test_shell v2.7
+# Class Diagram — test_shell v2.8
 
 > Read from **top to bottom** — higher layers depend on lower ones.
 

@@ -1,19 +1,29 @@
 /// =================================================================
-///  IModule — 模块开发者只需要 include 这一个头文件
+///  IModule — 模块接口基类（SDK 自包含，不依赖 EventBus）
 /// =================================================================
 ///
-///  写一个模块只需要知道 3 件事:
-///    1. 继承 IModule，实现 GetName()
+///  定义模块契约。写一个模块只需要知道 3 件事:
+///    1. 继承 SDK 基类 ModuleBase（见 sdk/ModuleBase.h），实现 GetName()
 ///    2. 在 OnInit() 里用 REGISTER_FUNC 注册函数
 ///    3. 用 ParmarPack 读写参数 (Get/Set/GetAsOr)
 ///
-///  示例:
-///    class MyModule : public IModule {
+///  继承关系:
+///    IModule (本文件, 接口契约)  ←  ModuleBase (sdk/, + SetResult/SetError 收尾助手)
+///                                        ↑
+///                                你的模块 (继承 ModuleBase)
+///
+///  接线谁来做？——宿主。模块只声明「我有哪些命令」，宿主（core/ModuleLifeManager）
+///  通过 ForEachFunc 枚举命令表，把每个命令接成 EventBus 信号。所以 SDK 层
+///  对 EventBus / 线程池 / 任务分片一无所知。
+///  直接继承 IModule 只适合「独立测试模块逻辑」（见 test/sdk/imodule_test.cpp）。
+///
+///  示例（注册进框架的正确写法，见 modules/samples/CalculatorModule.h）:
+///    #include "sdk/sdk.h"                      // 一个 include 到位
+///    class MyModule : public ModuleBase {
 ///        const char* GetName() const override { return "MyModule"; }
 ///        bool OnInit() override {
 ///            REGISTER_FUNC("hello", "Say hello", {
-///                LOG_PLAIN("Hello!");
-///                pack->success = true;
+///                SetResult(pack, "Hi!");       // 成功收尾
 ///            });
 ///            return true;
 ///        }
@@ -45,7 +55,8 @@
     RegisterFunc(id, description, [this](ParmarPack* pack) body)
 
 // =================================================================
-//  IModule — module base class (public SDK)
+//  IModule — 模块接口基类 (public SDK interface)
+//  具体模块请继承 sdk/ModuleBase（本类 + SetResult/SetError 收尾助手）
 // =================================================================
 class IModule
 {
@@ -62,6 +73,19 @@ public:
     virtual void        ReturnValue(ParmarPack* pack);
     virtual const char* GetName()    const = 0;
     virtual int         GetVersion() const { return 1; }
+
+    // ---- function table enumeration (host uses this to wire commands) ----
+    // 遍历「命令 id → 描述」。宿主侧接线（AddModule）据此把每个命令注册成
+    // EventBus 信号；本类对 EventBus 一无所知，只暴露自己的命令表。
+    virtual void ForEachFunc(
+        const std::function<void(const std::string& id, const std::string& desc)>& visitor) const
+    {
+        for (const auto& kv : funcs_)
+        {
+            auto it = explains_.find(kv.first);
+            visitor(kv.first, (it != explains_.end()) ? it->second : std::string());
+        }
+    }
 
     // ---- global output mutex (single lock for all cout output) ----
     static std::mutex& OutputMutex() { static std::mutex m; return m; }

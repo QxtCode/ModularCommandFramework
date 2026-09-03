@@ -1,23 +1,18 @@
 /// ============================================================
-///  CalculatorModule — external DLL module example
+///  CalculatorModule — 纯 SDK 模块（演示第三方开发者写法）
 /// ============================================================
 ///
-///  Demonstrates the new ParmarPack API (v2.3):
-///    pack->GetAsOr<int>("key", default)
-///    pack->Get("key")           → optional<string>
-///    pack->Set("key", "val")
+///  只 include "sdk/sdk.h"，继承 ModuleBase。不 include core、不链 eventbus。
+///  命令接线由宿主（ModuleLifeManager）通过 ForEachFunc 自动完成。
 ///
 ///  Build:
 ///    add_library(CalculatorModule SHARED CalculatorModule.cpp)
-///    target_include_directories(CalculatorModule PRIVATE ${test_shell_ROOT})
-///    target_link_libraries(CalculatorModule PRIVATE eventbus)
+///    target_link_libraries(CalculatorModule PRIVATE test_shell_sdk)
 
 #pragma once
-#include "core/ModuleBaseObject.h"
-#include "event_bus/event_bus.h"
-#include <iostream>
+#include "sdk/sdk.h"
 
-class CalculatorModule : public ModuleBaseObject
+class CalculatorModule : public ModuleBase
 {
 public:
     const char* GetName() const override { return "Calculator"; }

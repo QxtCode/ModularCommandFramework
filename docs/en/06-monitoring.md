@@ -12,7 +12,7 @@
 
 ```
 > -m:MetricsCollector -f:show
-[OK] === test_shell v2.7 Dashboard ===
+[OK] === test_shell v2.8 Dashboard ===
   CPU:     0.00%
   Memory:  0 KB
   Threads: 4 workers / 16 total

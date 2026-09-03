@@ -1,14 +1,13 @@
 #pragma once
 #include <iostream>
-#include "core/ModuleBaseObject.h"
-#include "event_bus/event_bus.h"
+#include "sdk/sdk.h"
 
 // ============================================================
 //  PrintModule — 演示：用 REGISTER_FUNC 注册 3 个函数
 // ============================================================
 //  给初学者看的范例模块
 
-class PrintModule : public ModuleBaseObject
+class PrintModule : public ModuleBase
 {
 public:
     const char* GetName() const override { return "PrintModule"; }
