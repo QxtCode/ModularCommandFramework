@@ -126,6 +126,48 @@ TEST(JsonFormatterTest, EscapeBackslash)
         << "Backslashes should be escaped";
 }
 
+TEST(JsonFormatterTest, EscapesControlCharactersInData)
+{
+    // 弱转义 bug：return_value 含 \t \r 控制字符时旧实现原样输出，
+    // 产出非法 JSON（JSON 规范禁止字符串内裸控制字符，QML JSON.parse 拒收）。
+    // \x01 用相邻字面量隔离拼接，防 hex 转义贪婪吞噬后续字符。
+    JsonFormatter fmt;
+    ParmarPack pack;
+    pack.success = true;
+    pack.return_value = "tab\there\rcr" "\x01" "ctrl";
+
+    std::string out = fmt.Format(pack);
+
+    // 紧凑单行 JSON 全文不允许任何裸控制字节（< 0x20）
+    for (unsigned char c : out) {
+        EXPECT_GE(c, 0x20u)
+            << "raw control byte 0x" << std::hex << static_cast<int>(c)
+            << " in output — invalid JSON";
+    }
+    EXPECT_NE(out.find("\\t"), std::string::npos);
+    EXPECT_NE(out.find("\\r"), std::string::npos);
+    EXPECT_NE(out.find("\\u0001"), std::string::npos);
+}
+
+TEST(JsonFormatterTest, EscapesControlCharactersInErrorMessage)
+{
+    JsonFormatter fmt;
+    ParmarPack pack;
+    pack.success = false;
+    pack.error.code = 1;
+    pack.error.message = "line1\tline2" "\x02";
+
+    std::string out = fmt.Format(pack);
+
+    for (unsigned char c : out) {
+        EXPECT_GE(c, 0x20u)
+            << "raw control byte 0x" << std::hex << static_cast<int>(c)
+            << " in output — invalid JSON";
+    }
+    EXPECT_NE(out.find("\\t"), std::string::npos);
+    EXPECT_NE(out.find("\\u0002"), std::string::npos);
+}
+
 // ================================================================
 //  QuietFormatter
 // ================================================================

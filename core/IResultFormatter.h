@@ -60,36 +60,25 @@ class JsonFormatter : public IResultFormatter
 public:
     std::string Format(const ParmarPack& pack) const override
     {
+        // 转义复用 sdk/ParmarPack.h 的 parmar_json::Escape（完整版：
+        // " \ \n \r \t + \uXXXX 控制字符）。此前这里有一份只处理
+        // " \ \n 的弱拷贝，return_value 含 \t/\r 时产出非法 JSON。
         std::string json = "{\"ok\":";
         json += pack.success ? "true" : "false";
 
         if (pack.success)
         {
-            json += ",\"data\":\"" + Escape(pack.return_value) + "\"";
+            json += ",\"data\":" + parmar_json::Escape(pack.return_value);
         }
         else
         {
             json += ",\"error\":{";
             json += "\"code\":" + std::to_string(pack.error.code) + ",";
-            json += "\"message\":\"" + Escape(pack.error.message) + "\"";
+            json += "\"message\":" + parmar_json::Escape(pack.error.message);
             json += "}";
         }
         json += "}";
         return json;
-    }
-
-private:
-    static std::string Escape(const std::string& s)
-    {
-        std::string out;
-        for (char c : s)
-        {
-            if (c == '"')  out += "\\\"";
-            else if (c == '\\') out += "\\\\";
-            else if (c == '\n') out += "\\n";
-            else           out += c;
-        }
-        return out;
     }
 };
 
