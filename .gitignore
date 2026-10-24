@@ -15,6 +15,15 @@ x86/
 *.suo
 *.sln.docstates
 
+# Claude Code local config/memory (per-machine, not for repo)
+.claude/
+
+# Local backups
+*.bak
+
+# CMake per-machine presets (contains local Qt path, not for repo)
+CMakeUserPresets.json
+
 # CMake generated
 CMakeCache.txt
 CMakeFiles/

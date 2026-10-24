@@ -29,10 +29,10 @@ FetchContent_MakeAvailable(googletest)
 # ============================================
 add_subdirectory(test_dll)
 
+# 核心 .cpp（Task/CommandParser）不再重复编译 —— 链 test_shell_core。
+# ConsoleParser 是测试专用解析器，仍单独编。
 add_executable(test_runner
     main.cpp
-    ../core/Task.cpp
-    ../parser/CommandParser.cpp
     ../parser/ConsoleParser.cpp
     core/task_test.cpp
     core/tasks_pool_test.cpp
@@ -89,13 +89,10 @@ target_include_directories(test_runner PRIVATE
 )
 
 target_link_libraries(test_runner PRIVATE
-    platform_utils
-    eventbus
+    test_shell_core
     GTest::gtest
     GTest::gtest_main
-    Threads::Threads
     psapi
-    ${PLATFORM_LIBS}
 )
 
 target_compile_features(test_runner PUBLIC cxx_std_20)
