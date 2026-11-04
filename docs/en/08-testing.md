@@ -21,7 +21,7 @@ cd out/build/debug
 ./test_runner --gtest_filter=ShellEngineTest.* --gtest_repeat=3
 ```
 
-## Test suite overview (507 tests, 72 test suites; measured 2026-09-03)
+## Test suite overview (521 tests, 75 test suites; measured 2026-10-24, Debug)
 
 | Suite | Count | What it tests |
 |-------|-------|---------------|
@@ -29,18 +29,20 @@ cd out/build/debug
 | **PeakStressTest** | 6 | Ramp-up, burst, sustained load, pool utilization, recovery, slot exception |
 | **ResultStore** | 15 | Push/Drain, HasResults idempotency, concurrent push, deadlock safety |
 | **InputThread** | 13 | cv.wait_for predicate, multi-producer, boundary inputs, integration |
-| **ConcurrencyStress** | 7 | TOCTOU races, shard data races, Emit blocking, DLL dangling slots |
+| **ConcurrencyStress** | 8 | TOCTOU races, shard data races, Emit blocking, DLL dangling slots |
 | **DLLLifecycleTest** | 10 | DLL load/unload, multi-thread emit during unload, chaos |
 | **TaskTest** | 12 | Assign, Step, PushShard, Pause/Resume/Cancel, progress |
 | **TasksPoolTest** | 7 | Acquire/Release, pool exhaustion, edge cases |
-| **CmdParserTest** | 27 | TXT parsing, SendPack, custom formats, concurrent access |
-| **BusTest** | 24 | Register/Emit/Link/Remove signals, type safety, weak slots |
+| **CmdParserTest** | 38 | TXT parsing, SendPack, custom formats, concurrent access |
+| **TokenizerTest** | 36 | Tokenizer unit tests (TXT/JSON lexical boundaries) |
+| **ParserTest** | 7 | Parser combination cases |
+| **BusTest** | 26 | Register/Emit/Link/Remove signals, type safety, weak slots |
 | **PlatformFileSystem** | 14 | FindFiles, FileExists, NormalizePath (cross-platform) |
 | **PlatformSharedLibrary** | 9 | SharedLibrary Load/GetFunction, concurrent stress |
 | **PlatformSharedMemory** | 10 | SharedMemory Create/Open/ReadWrite, concurrent |
 | **PlatformProcess** | 9 | Process Launch/ExePath/CpuTimeUs |
-| **PlatformBoundary** | 41 | Boundary, smoke, memory, concurrency edge cases |
-| *Others* | ~120 | ThreadPool, Formatter, Logger, IModule, Metrics, etc. |
+| **PlatformBoundary** | 49 | Boundary, smoke, memory, concurrency edge cases |
+| *Others* | 232 | ThreadPool, Formatter, Logger, IModule, persistence, Metrics, Monitor, Batch, etc. |
 
 ## Writing new tests
 
@@ -84,7 +86,7 @@ When EventBus signal accumulation is a concern, also remove known test signals i
 > "all complete" assertions, size the pool to ≥ N; to only verify "some complete", assert `> 0`.
 
 ```cpp
-class TestMod : public ModuleBaseObject {
+class TestMod : public ModuleBase {
     std::atomic<int>* cnt_;
 public:
     TestMod(std::string name, std::atomic<int>* cnt) : name_(name), cnt_(cnt) {}
@@ -121,7 +123,7 @@ EXPECT_GT(exec_count.load(), 0);
 For tests that need a real module, use a lightweight inline class:
 
 ```cpp
-class TestMod : public ModuleBaseObject {
+class TestMod : public ModuleBase {
     const char* GetName() const override { return "TestMod"; }
     bool OnInit() override {
         REGISTER_FUNC("echo", "echo back", {

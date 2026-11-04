@@ -110,7 +110,7 @@ hello
 [OK]
 
 > -m:MetricsCollector -f:show
-=== test_shell v2.6 Dashboard ===
+=== test_shell v2.8 Dashboard ===
   CPU:     0.01%
   Memory:  8520 KB
   Threads: 4 workers / 16 total
@@ -182,7 +182,9 @@ core/platform/
 ### Built-in Module
 
 ```cpp
-class PrintModule : public ModuleBaseObject {
+#include "sdk/sdk.h"            // one include; no eventbus dependency
+
+class PrintModule : public ModuleBase {
 public:
     const char* GetName() const override { return "PrintModule"; }
 
@@ -200,7 +202,7 @@ public:
 
 ```cpp
 // my_module.cpp
-class MyModule : public ModuleBaseObject { ... };
+class MyModule : public ModuleBase { ... };
 EXPORT_MODULE(MyModule)  // auto-generates CreateModule / DestroyModule
 ```
 
@@ -228,7 +230,7 @@ EXPORT_MODULE(MyModule)  // auto-generates CreateModule / DestroyModule
 ### Test Scale
 
 ```
-507 tests / 72 test suites (measured 2026-09-03)
+521 tests / 75 test suites (measured 2026-10-24, Debug)
 ├── ShellEngine (20)       Start/stop, concurrency, shutdown races
 ├── ConcurrencyStress (8)  Emit blocking, TOCTOU, ChaosMonkey
 ├── InputThread (13)       Producer/consumer, backpressure, data integrity
@@ -261,7 +263,13 @@ test_shell/
 │   ├── ThreadPool.h         #   Thread pool
 │   ├── TasksPool.h          #   Object pool
 │   ├── ResultStore.h        #   Result warehouse
-│   ├── ModuleLifeManager.h  #   Module lifecycle
+│   ├── ModuleLifeManager.h  #   Module lifecycle (v2.8 host-side ForEachFunc wiring)
+│   ├── ModuleBaseObject.h   #   Compat base (+ConnectToEventBus test backdoor)
+│   ├── Task.h / Task.cpp    #   Shard task + ExportRecord/Restore snapshot
+│   ├── ITaskPersistence.h   #   Persistence interface
+│   ├── MemTaskStore.h       #   MemPersistence / MemScheduler
+│   ├── NullTaskStore.h      #   NullPersistence / NullScheduler
+│   ├── TaskFilePersistence.h#   File backend (one .dat per task; ShellApp default)
 │   ├── Config.h             #   Configuration system
 │   └── platform/            #   Cross-platform abstraction
 ├── eventbus/                # EventBus shared library (DLL)
@@ -271,12 +279,19 @@ test_shell/
 │   │   └── slot.h           #   weak_ptr-protected slot
 │   └── src/event_bus_dll.cpp
 ├── parser/                  # Command parser
-├── sdk/                     # Public API
-│   ├── IModule.h            #   Module interface + LOG_PLAIN + REGISTER_FUNC
-│   └── ParmarPack.h         #   Parameter pack
+├── sdk/                     # Public API (header-only INTERFACE lib, no eventbus)
+│   ├── IModule.h            #   Module interface + LOG_PLAIN + REGISTER_FUNC + ForEachFunc
+│   ├── ModuleBase.h         #   SDK base class (+SetResult/SetError helpers; inherit this)
+│   ├── ParmarPack.h         #   Parameter pack + ToJson/FromJson serialization
+│   ├── Export.h             #   EXPORT_MODULE macro (self-contained TEST_SHELL_EXPORT)
+│   └── sdk.h                #   Umbrella header (single include)
 ├── modules/                 # Built-in modules
+│   ├── PrintModule.h        #   Demo module (single shard)
+│   ├── BatchModule.h        #   Batch file processing (multi-shard + pause/resume, v2.8)
+│   ├── TaskManagerModule.h  #   Task pause/resume/list
+│   └── logging/LogModule.h  #   Logging module
 ├── monitor/                 # shell_monitor (FTXUI)
-├── test/                    # Tests (507 cases)
+├── test/                    # Tests (521 cases)
 └── docs/                    # Documentation (bilingual)
 ```
 

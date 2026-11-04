@@ -196,7 +196,7 @@ when idle.
 
 ## Configuration reference
 
-Configuration is loaded by `ShellConfig` in `main.cpp` at startup.  
+Configuration is loaded by `ShellConfig` inside `ShellApp` at startup.
 See [07-architecture](07-architecture.md) for the loading flow.
 
 ### test_shell.cfg (place next to the executable)

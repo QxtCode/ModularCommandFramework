@@ -19,9 +19,9 @@ All platform differences are handled by `core/platform/` — you write module lo
 ```cpp
 // MyModule.h
 #pragma once
-#include "core/ModuleBaseObject.h"
+#include "sdk/sdk.h"          // one include is enough; no eventbus dependency
 
-class MyModule : public ModuleBaseObject {
+class MyModule : public ModuleBase {
 public:
     // 1. Name — what you type after -m:
     const char* GetName() const override { return "MyModule"; }
@@ -38,7 +38,9 @@ public:
 };
 ```
 
-### Built-in: add 2 lines to `main.cpp`
+### Built-in: register in `ShellApp::SetupModules()`
+
+Built-in modules are registered in `core/ShellApp.h` (`SetupModules()`), not in `main.cpp`:
 
 ```cpp
 #include "modules/MyModule.h"
@@ -55,7 +57,7 @@ mgr.AddModule(std::make_unique<MyModule>());
 EXPORT_MODULE(MyModule)
 ```
 
-Compile to shared library (`.dll` / `.so` / `.dylib`), put in `plugins/`. Framework auto-loads it on startup via `ScanPluginDirectory`. The `EXPORT_MODULE` macro uses `PLATFORM_EXPORT` from the platform layer — works on all platforms.
+Compile to shared library (`.dll` / `.so` / `.dylib`), put in `plugins/`. Framework auto-loads it on startup via `ScanPluginDirectory`. The `EXPORT_MODULE` macro lives in `sdk/Export.h` and uses `TEST_SHELL_EXPORT` — it works on all platforms with zero core dependency.
 
 ## Build
 

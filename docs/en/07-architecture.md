@@ -97,6 +97,10 @@ ShellEngine engine(cfg.pool_size, cfg.workers);
 
 Priority: `CLI args > config file > built-in defaults`.
 
+> Since v2.8 this loading lives in the `core/ShellApp.h` constructor (`cfg_.LoadFromFile(...)` →
+> `cfg_.ApplyArgs(...)` → engine built with `cfg_.pool_size / cfg_.workers`); `main.cpp` no longer
+> writes it directly. The snippet above just shows the equivalent `ShellConfig` usage.
+
 The `log_level` field is applied to `LogModule` after module registration, overriding `log.conf`.
 
 See [10-performance](10-performance.md) for the full parameter reference.
@@ -125,8 +129,10 @@ resume command → store->Load(id) → pool.Acquire → task->Restore(rec)
 | `ITaskPersistence` | Pluggable snapshot backend (Save/Load/Delete/LoadAll/GC) |
 | `ShellEngine::SetTaskPersistence` | Injects the backend; the worker finish path saves on pause |
 
-The backend is injected by `main.cpp` and defaults to `nullptr` (pure in-memory,
-identical to v2.5 behavior). See [05-task-system](05-task-system.md) for the
+The backend is injected by `ShellApp` via `engine_->SetTaskPersistence(store_.get())`
+and defaults to `TaskFilePersistence` (files under `task_store/` next to the executable).
+`SetTaskPersistence(nullptr)` disables persistence (pure in-memory, identical to v2.5 behavior).
+See [05-task-system](05-task-system.md) for the
 interface contract developers must satisfy to plug in FilePersistence / SqlitePersistence.
 
 ## Safety — Slot exception catch-all (v2.5)

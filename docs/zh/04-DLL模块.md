@@ -59,15 +59,19 @@ dll_handles_[name] = std::move(lib);  // RAII: 析构时自动 FreeLibrary / dlc
 ```
 UnloadModule("Calculator")
   → OnShutdown()
-  → RemoveSignal("Calculator.*")   // 阻塞直到所有正在执行的回调完成
-  → module_map_.erase()            // 释放 shared_ptr → 可能删除模块
-  → dll_handles_.erase()           // SharedLibrary 析构 → FreeLibrary/dlclose
+  → RemoveSignal("Calculator.*")   // v2.6 快照式 Emit：立即返回，不等慢回调
+  → module_map_.erase()            // 释放 shared_ptr → 无在途回调时删除模块
+  → dll_handles_.erase()           // SharedLibrary 析构 → FreeLibrary/dlclose（立即）
 ```
 
-框架保证即使回调正在执行也能安全卸载：
-1. `RemoveSignal` 获取独占锁——阻塞直到所有 `Emit` 调用完成
-2. `Slot::Run()` 在执行期间持有模块的 `shared_ptr`
-3. 所有引用释放后，动态库才被卸载
+v2.6 起 `RemoveSignal` 不再等待在途回调（快照式 Emit 只持锁拷贝信号 `shared_ptr`，
+锁外执行 Slot）。由此：
+
+1. `Slot::Run()` 执行期间持有模块的 `shared_ptr` → **模块对象**不会在回调中途析构；
+2. 但 `UnloadModule` 会立即释放 DLL 句柄，**不会等待在途回调离开动态库代码**。
+
+所以热卸载只应在**模块空闲**时调用（没有命令在飞），或由模块在 `OnShutdown()` 里
+自行等待在途回调归零（如原子计数）。不要一边有慢命令执行一边卸载插件。
 
 ## 不需要 DestroyModule
 

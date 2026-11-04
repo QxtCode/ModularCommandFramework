@@ -96,10 +96,11 @@
                   │ 管理                                │
                   ▼                                    │
    ┌─────────────────────────────────────┐            │
-   │         ModuleBaseObject            │            │
+   │             ModuleBase              │            │
    │           : IModule                 │            │
    │  ───────────────────────────────    │            │
-   │  + ConnectToEventBus(shared_ptr)    │            │
+   │  + ForEachFunc(fn)                  │            │
+   │    (host-side wiring, see SDK doc)  │            │
    └─────────────────────────────────────┘            │
                   △ 继承                               │
                   │                                    │
@@ -131,6 +132,10 @@
 ```
 
 > `+` public &nbsp; `-` private &nbsp; `◄── test hook` for test injection only (not used in production)
+>
+> `ModuleBaseObject` (`core/ModuleBaseObject.h`) is a compatibility subclass of `ModuleBase`
+> that adds the `ConnectToEventBus` test backdoor. It is kept for legacy code and tests —
+> it is **not** the base class module authors should inherit.
 
 ## Key relationships
 
@@ -143,7 +148,7 @@
 | From | To | Kind |
 |------|----|------|
 | `ShellApp` | `ShellEngine` | owns (unique_ptr) |
-| `ShellApp` | `MemPersistence` | owns (shared_ptr) |
+| `ShellApp` | `TaskFilePersistence` | owns (shared_ptr, default backend) |
 | `ShellEngine` | `ThreadPool` | owns |
 | `ShellEngine` | `TasksPool` | owns |
 | `ShellEngine` | `ResultStore` | uses (singleton) |
@@ -154,11 +159,13 @@
 | `Signal<Args>` | `Slot<Args>` | owns |
 | `Slot<Args>` | `WeakRefHolder` | owns |
 | `Slot<Args>` | `IModule` | points to (via weak_ptr) |
-| `ModuleLifeManager` | `ModuleBaseObject` | owns (shared_ptr map) |
+| `ModuleLifeManager` | `ModuleBase` | owns (shared_ptr map) |
 | `ModuleLifeManager` | `EventBus` | uses (singleton) |
-| `ModuleBaseObject` | `IModule` | inherits |
-| `ModuleBaseObject` | `EventBus` | uses (ConnectToEventBus) |
-| `MetricsCollector` | `ModuleBaseObject` | inherits |
+| `ModuleLifeManager` | `ModuleBase::ForEachFunc` | uses (host-side wiring) |
+| `ModuleBase` | `IModule` | inherits (SDK layer) |
+| `ModuleBaseObject` | `ModuleBase` | inherits (core compat layer) |
+| `ModuleBaseObject` | `EventBus` | uses (ConnectToEventBus, test backdoor) |
+| `MetricsCollector` | `ModuleBase` | inherits |
 | `IModule::Execute()` | `ParmarPack` | receives pointer |
 | `ShellEngine::ProcessInput()` | `CommandParser` | uses (singleton) |
 | `Worker lambda` | `ResultStore` | uses (singleton, PushResult) |
@@ -183,7 +190,7 @@ Input: "-m:Calc -f:add -v:a|1,b|2"
   │     │       → Signal::TraverseSlots
   │     │         → Slot::Run
   │     │           → WeakRefHolder::Lock() ← v2.4 安全检查
-  │     │           → ModuleBaseObject::Execute(pack)
+  │     │           → ModuleBase::Execute(pack)
   │     │             → funcs_["add"](pack)  ← 模块的回调
   │     │               → pack->return_value = "3"
   │     │               → pack->success = true

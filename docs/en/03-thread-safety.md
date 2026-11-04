@@ -24,14 +24,21 @@ REGISTER_FUNC("work", "...", {
 
 ## Plugin unload safety
 
-Unloading a shared library module while it's executing is safe:
+`UnloadModule` runs `OnShutdown()` → `RemoveSignal("Module.*")` → drops the module
+object → unloads the library (RAII `platform::SharedLibrary` destructor — `FreeLibrary`
+on Windows, `dlclose` on Linux/macOS).
 
-1. `UnloadModule` calls `RemoveSignal` which blocks until all `Emit` calls finish
-2. `Emit` holds a shared_lock during slot execution
-3. `Slot::Run()` locks a shared_ptr to the module during callback — defense in depth
-4. Only after all callbacks return does the library unload (via RAII `platform::SharedLibrary` destructor — `FreeLibrary` on Windows, `dlclose` on Linux/macOS)
+Since v2.6, `Emit` takes a snapshot (copies the signal `shared_ptr` under the lock, runs
+slots outside it), so `RemoveSignal`/`UnloadModule` **do not wait for slow in-flight
+callbacks**:
 
-**You don't need to worry about this.** The framework handles it.
+- The `shared_ptr` held by `Slot::Run()` keeps the **module object** alive mid-callback;
+- But the DLL handle is released before `UnloadModule` returns. The framework does **not**
+  keep library code mapped while an in-flight callback is still executing in it.
+
+Rule: hot-unload only an **idle** module (no commands in flight), or make the module wait
+for its own in-flight callbacks to drain in `OnShutdown()`. Do not rely on the pre-v2.6
+guarantee that unload blocks until every callback returns.
 
 ## `LOG_PLAIN` — use it, don't use `std::cout`
 

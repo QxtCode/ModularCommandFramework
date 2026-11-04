@@ -89,26 +89,27 @@ resume command → store->Load(id) → pool.Acquire → task->Restore(rec)
 ### Wiring it in
 
 Assembly now lives in `ShellApp` (`core/ShellApp.h`); `main.cpp` is down to a few lines.
-The default backend is `MemPersistence`:
+The default backend is `TaskFilePersistence` (files under `task_store/` next to the executable):
 
 ```cpp
 // core/ShellApp.h constructor (store_ declared before engine_ → destruction order)
-store_  = std::make_shared<MemPersistence>();
+store_  = std::make_shared<TaskFilePersistence>(
+              platform::Process::ExeDir() + "task_store");
 engine_ = std::make_unique<ShellEngine>(cfg_.pool_size, cfg_.workers);
 engine_->SetTaskPersistence(store_.get());   // engine saves a snapshot on pause
 // ... SetupModules() registers TaskManagerModule(pool, workers, store_.get())
 ```
 
-To switch to a file backend, change `store_`'s type and constructor to
-`TaskFilePersistence` (see [15-开发手册](../zh/15-开发手册.md) §4.4).
+To switch backends (e.g. the in-memory `MemPersistence`), change `store_`'s type and
+constructor (see [15-开发手册](../zh/15-开发手册.md) §4.4).
 
-`SetTaskPersistence(nullptr)` (default) = pure in-memory, paused tasks are dropped —
-identical to v2.5 behavior.
+`SetTaskPersistence(nullptr)` = no persistence; paused tasks are dropped (pure in-memory,
+identical to v2.5 behavior).
 
 ### How to implement an ITaskPersistence backend
 
 Developers can plug in their own backend (FilePersistence, SqlitePersistence, …) by
-implementing 5 virtual methods:
+implementing 6 virtual methods:
 
 | Method | Responsibility |
 |--------|----------------|
@@ -128,9 +129,9 @@ Three hard requirements:
 3. **Lifetime** — the backend must outlive `ShellEngine` (declare it before the engine).
 
 Reference implementations:
-- `NullPersistence` — default, zero-overhead no-op.
+- `NullPersistence` — zero-overhead no-op (equivalent to no injected backend).
 - `MemPersistence` — in-process map, lost on restart.
-- `TaskFilePersistence` — **implemented** (`core/TaskFilePersistence.h`). One file per task (`task_<id>.dat`), line format `key=value` (no raw newlines; `shards_json` is escaped). Internal `std::mutex` for thread safety; a private lock-free `LoadContent` avoids nested-lock deadlock in `LoadAll`/`GC`. Tested in `test/core/task_filepersistence_test.cpp`.
+- `TaskFilePersistence` — **ShellApp's default backend** (`core/TaskFilePersistence.h`). One file per task (`task_<id>.dat`), line format `key=value` (no raw newlines; `shards_json` is escaped). Internal `std::mutex` for thread safety; a private lock-free `LoadContent` avoids nested-lock deadlock in `LoadAll`/`GC`. Tested in `test/core/task_filepersistence_test.cpp`.
 - `SqlitePersistence` — planned; implement to the rules above.
 
 ### Delayed scheduling (ITaskScheduler, planned)

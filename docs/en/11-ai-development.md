@@ -12,11 +12,14 @@ When you ask an AI assistant to work on this project, it automatically reads the
 
 | File | Content |
 |------|---------|
-| `project-overview.md` | High-level: what this project is, v2.5 changes, source layout |
-| `architecture.md` | Data flow, ShellEngine 4-step pipeline, ResultStore, Slot safety |
-| `key-classes.md` | API reference: ShellEngine, ResultStore, EventBus, Config |
-| `build-guide.md` | How to configure, build, run, and test |
-| `test-strategy.md` | Test patterns: atomic counters, aggressive cleanup, flaky detection |
+| `project-overview.md` | High-level: what this project is, v2.8 architecture, source layout |
+| `architecture.md` | Data flow, ShellEngine 4-step pipeline, SDK wiring inversion, pause-save loop |
+| `key-classes.md` | API reference: ShellApp/ShellEngine/IModule+ModuleBase/Task/TasksPool/EventBus/ITaskPersistence |
+| `build-guide.md` | Configure, build, run, test (including ninja dependency pitfalls) |
+| `test-strategy.md` | Test patterns: atomic counters, aggressive cleanup, flaky detection, multi-shard pause/resume |
+| `concurrency-audit.md` | Concurrency audit: issue A fixed, v2.8 destruction-order fixes, performance fact-check |
+| `dev-guide.md` | Six-step workflow, safe/forbidden zones, concurrency learning path |
+| `test-hook-injection.md` | Two-layer test hook injection + real performance baseline (~100k cmd/s) |
 
 ### How to update memory
 
@@ -77,7 +80,7 @@ Also create the Chinese version in docs/zh/07-架构概览.md.
 - `LOG_PLAIN` for output (never raw `std::cout`)
 
 ### Architecture rules
-- Modules implement `IModule` interface: `GetName()`, `OnInit()`, `OnShutdown()`
+- Modules extend `ModuleBase` from `sdk/sdk.h` (which implements `IModule`): `GetName()`, `OnInit()`, `OnShutdown()`
 - Use `REGISTER_FUNC(name, desc, lambda)` in `OnInit()`
 - Worker threads execute `task->Step(bus)` in a loop
 - Results flow through `ResultStore` (producer-consumer pattern)
@@ -86,7 +89,7 @@ Also create the Chinese version in docs/zh/07-架构概览.md.
 ### Platform rules
 - NEVER add `#ifdef _WIN32` or `#ifdef __linux__` outside `core/platform/`
 - Use `PLATFORM_WINDOWS`, `PLATFORM_LINUX`, `PLATFORM_MACOS` from `platform.h`
-- Use `PLATFORM_EXPORT` instead of `__declspec(dllexport)`
+- Core code: use `PLATFORM_EXPORT` instead of `__declspec(dllexport)`; SDK modules get `TEST_SHELL_EXPORT` via `EXPORT_MODULE` (no core dependency)
 - Use `platform::SharedLibrary`, `platform::SharedMemory`, `platform::Process` for OS APIs
 - Implement new platform features in `_win.cpp` and `_posix.cpp` pair files
 

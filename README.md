@@ -110,7 +110,7 @@ hello
 [OK]
 
 > -m:MetricsCollector -f:show
-=== test_shell v2.6 Dashboard ===
+=== test_shell v2.8 Dashboard ===
   CPU:     0.01%
   Memory:  8520 KB
   Threads: 4 workers / 16 total
@@ -234,7 +234,7 @@ EXPORT_MODULE(MyModule)  // 自动生成 CreateModule / DestroyModule
 ### 测试规模
 
 ```
-507 tests / 72 个测试套件（2026-09-03 实测）
+521 tests / 75 个测试套件（2026-10-24 实测，Debug）
 ├── ShellEngine (20)     引擎启停/并发/关闭竞态
 ├── ConcurrencyStress (8) Emit阻塞/TOCTOU/ChaosMonkey
 ├── InputThread (13)     生产者消费者/背压/数据完整性
@@ -276,7 +276,8 @@ test_shell/
 │   ├── Task.h / Task.cpp    #   分片任务 + ExportRecord/Restore 快照
 │   ├── ITaskPersistence.h   #   持久化接口
 │   ├── MemTaskStore.h       #   MemPersistence / MemScheduler 内存实现
-│   ├── TaskFilePersistence.h#   文件持久化后端（每任务一个 .dat）
+│   ├── NullTaskStore.h      #   NullPersistence / NullScheduler 空实现
+│   ├── TaskFilePersistence.h#   文件持久化后端（每任务一个 .dat，ShellApp 默认）
 │   ├── Config.h             #   配置系统
 │   └── platform/            #   跨平台抽象层
 ├── eventbus/                # EventBus 共享库 (DLL)
@@ -298,7 +299,7 @@ test_shell/
 │   ├── TaskManagerModule.h  #   任务暂停/恢复/列表
 │   └── logging/LogModule.h  #   日志模块
 ├── monitor/                 # shell_monitor (FTXUI)
-├── test/                    # 测试 (507 cases)
+├── test/                    # 测试 (521 cases)
 └── docs/                    # 文档 (中英双语)
 ```
 
@@ -316,7 +317,7 @@ test_shell/
 | [08-测试指南](docs/zh/08-测试指南.md) | 测试策略与模式 |
 | [10-性能测试](docs/zh/10-性能测试.md) | 性能基线与调优 |
 | [12-并发审计](docs/zh/12-并发审计.md) | 并发问题追踪 |
-| [13-UI对接](docs/zh/13-UI对接.md) | QML 前端接入指南（已落地 + 进度快照） |
+| [13-UI对接](docs/zh/13-UI对接.md) | QML 前端接入机制教程（已落地验证） |
 | [14-SDK原理](docs/zh/14-SDK原理.md) | SDK 拆分原理（WHAT/HOW 分离、接线反转） |
 | [15-开发手册](docs/zh/15-开发手册.md) | 面向自学者的开发手册（能力分级 + 存储/延迟接口） |
 
